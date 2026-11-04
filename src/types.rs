@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+pub const ROLE_VETERAN_ID: u64 = 1558424052857708575;
+pub const ROLE_MEMBER_ID: u64 = 1457394591019041050;
+pub const ROLE_GUEST_ID: u64 = 1556000057969610752;
+
 pub struct Data {
     pub chatbot_enabled: Arc<tokio::sync::RwLock<bool>>,
     pub db_pool: sqlx::PgPool,

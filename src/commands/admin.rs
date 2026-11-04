@@ -701,7 +701,7 @@ pub async fn autothread_list(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove"), rename = "absen_manage")]
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove", "absen_manage_audit"), rename = "absen_manage")]
 pub async fn absen_manage(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
@@ -782,7 +782,7 @@ pub async fn show_absen_list(ctx: Context<'_>) -> Result<(), Error> {
     match rows {
         Ok(results) => {
             if results.is_empty() {
-                send_embed(ctx, "Data Absen Bulanan", "Belum ada member yang melakukan absen untuk periode ini.", 0x3498db).await?;
+                send_embed(ctx, "Monthly Attendance Records", "No members have recorded attendance for this period yet.", 0x3498db).await?;
                 return Ok(());
             }
 
@@ -801,21 +801,21 @@ pub async fn show_absen_list(ctx: Context<'_>) -> Result<(), Error> {
                 let role_str = role_id.map(|rid| format!(" | Role: <@&{}>", rid)).unwrap_or_default();
 
                 let line = format!(
-                    "{}. 🎮 **{}** (`@{}`)\n   👤 Discord: **{}** | ID: `{}` (<@{}>){}\n",
-                    i + 1, disp, u_name, discord_username, discord_id, discord_id, role_str
+                    "{}. **{}** (`@{}`) - Discord: **{}** (`{}`){}\n",
+                    i + 1, disp, u_name, discord_username, discord_id, role_str
                 );
                 
                 // Keep it under embed limits
                 if desc.len() + line.len() > 3900 {
-                    desc.push_str("...dan data lainnya telah dipotong (melebihi batas embed).");
+                    desc.push_str("...and additional records truncated due to embed character limit.");
                     break;
                 }
                 desc.push_str(&line);
             }
-            send_embed(ctx, format!("📋 Rekap Absen Bulanan (Total: {} Member)", results.len()).as_str(), &desc, 0x2ecc71).await?;
+            send_embed(ctx, format!("Monthly Attendance Summary (Total: {} Members)", results.len()).as_str(), &desc, 0x2ecc71).await?;
         },
         Err(e) => {
-            send_embed(ctx, "Error", &format!("Gagal mengambil data absen: {}", e), 0xED4245).await?;
+            send_embed(ctx, "Error", &format!("Failed to retrieve attendance data: {}", e), 0xED4245).await?;
         }
     }
     Ok(())
@@ -829,6 +829,229 @@ pub async fn absenlist(ctx: Context<'_>) -> Result<(), Error> {
 #[poise::command(slash_command, prefix_command, rename = "list", category = "Admin")]
 pub async fn absen_manage_list(ctx: Context<'_>) -> Result<(), Error> {
     show_absen_list(ctx).await
+}
+
+pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer().await?;
+
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id,
+        None => {
+            send_embed(ctx, "Error", "This command can only be used within a server.", 0xED4245).await?;
+            return Ok(());
+        }
+    };
+    let db_pool = &ctx.data().db_pool;
+
+    // 1. Fetch recorded member IDs from khivella_absen_records
+    let rows = sqlx::query("SELECT discord_id FROM khivella_absen_records WHERE guild_id = $1")
+        .bind(guild_id.to_string())
+        .fetch_all(db_pool)
+        .await?;
+
+    let mut recorded_ids = std::collections::HashSet::new();
+    for r in rows {
+        use sqlx::Row;
+        let did: String = r.get("discord_id");
+        recorded_ids.insert(did);
+    }
+
+    // 2. Fetch all guild members
+    let mut all_members = Vec::new();
+    let mut after: Option<u64> = None;
+    loop {
+        let chunk = ctx.http().get_guild_members(guild_id, Some(1000), after).await?;
+        if chunk.is_empty() {
+            break;
+        }
+        if let Some(last) = chunk.last() {
+            after = Some(last.user.id.get());
+        }
+        let count = chunk.len();
+        all_members.extend(chunk);
+        if count < 1000 {
+            break;
+        }
+    }
+
+    // 3. Classify members based on Member & Veteran roles
+    let mut unrecorded_members = Vec::new();
+    let mut attended_members = Vec::new();
+    let mut exempt_veterans = Vec::new();
+
+    for m in all_members {
+        if m.user.bot {
+            continue;
+        }
+        let has_member = m.roles.iter().any(|r| r.get() == crate::types::ROLE_MEMBER_ID);
+        let has_veteran = m.roles.iter().any(|r| r.get() == crate::types::ROLE_VETERAN_ID);
+
+        if !has_member {
+            continue;
+        }
+
+        if has_veteran {
+            // Has Member role + Veteran role: completely exempt from attendance & role removal
+            exempt_veterans.push(m);
+            continue;
+        }
+
+        // Non-veteran with Member role: check attendance
+        if recorded_ids.contains(&m.user.id.to_string()) {
+            attended_members.push(m);
+        } else {
+            unrecorded_members.push(m);
+        }
+    }
+
+    if unrecorded_members.is_empty() {
+        let embed = serenity::builder::CreateEmbed::new()
+            .title("Attendance Audit - All Clear")
+            .description("All clan members holding the Member role have recorded attendance, or hold Veteran exemption.")
+            .color(0x2ecc71)
+            .field("Attended Members", format!("{} members", attended_members.len()), true)
+            .field("Exempt Veterans", format!("{} members", exempt_veterans.len()), true)
+            .field("Unrecorded Members", "0 members", true)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance Audit"));
+
+        ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        return Ok(());
+    }
+
+    // Format list of unrecorded members
+    let mut list_desc = String::new();
+    for (i, m) in unrecorded_members.iter().enumerate() {
+        let nick_info = if let Some(ref nick) = m.nick {
+            format!(" (Nick: `{}`)", nick)
+        } else {
+            String::new()
+        };
+        let line = format!("{}. <@{}> (`@{}`){}\n", i + 1, m.user.id, m.user.name, nick_info);
+        if list_desc.len() + line.len() > 3000 {
+            list_desc.push_str(&format!("...and {} more members.", unrecorded_members.len() - i));
+            break;
+        }
+        list_desc.push_str(&line);
+    }
+
+    let demote_btn_id = format!("absen_demote_{}", ctx.id());
+    let cancel_btn_id = format!("absen_cancel_{}", ctx.id());
+
+    let demote_button = serenity::builder::CreateButton::new(&demote_btn_id)
+        .label(format!("Demote All to Guest ({})", unrecorded_members.len()))
+        .style(serenity::all::ButtonStyle::Danger);
+
+    let cancel_button = serenity::builder::CreateButton::new(&cancel_btn_id)
+        .label("Cancel")
+        .style(serenity::all::ButtonStyle::Secondary);
+
+    let row = serenity::builder::CreateActionRow::Buttons(vec![demote_button.clone(), cancel_button.clone()]);
+
+    let embed = serenity::builder::CreateEmbed::new()
+        .title("Attendance Audit - Unrecorded Members Review")
+        .description(format!(
+            "The following **{}** member(s) hold the Member role (<@&{}>) without Veteran exemption (<@&{}>), and have **not** recorded their monthly attendance.\n\nClick **Demote All to Guest** below to remove all their existing roles, grant the Guest role (<@&{}>), and reset their server display names.",
+            unrecorded_members.len(),
+            crate::types::ROLE_MEMBER_ID,
+            crate::types::ROLE_VETERAN_ID,
+            crate::types::ROLE_GUEST_ID,
+        ))
+        .color(0xe67e22)
+        .field("Audit Stats", format!("• Attended Members: **{}**\n• Exempt Veterans: **{}**\n• Unrecorded Members: **{}**", attended_members.len(), exempt_veterans.len(), unrecorded_members.len()), false)
+        .field("Unrecorded Members List", list_desc, false)
+        .footer(serenity::builder::CreateEmbedFooter::new("Clicking Demote will strip all current roles and assign the Guest role."));
+
+    let reply = ctx.send(poise::CreateReply::default().embed(embed).components(vec![row])).await?;
+    let msg = reply.message().await?;
+
+    let interaction = msg
+        .await_component_interaction(ctx)
+        .timeout(std::time::Duration::from_secs(120))
+        .await;
+
+    let interaction = match interaction {
+        Some(i) => i,
+        None => {
+            let disabled_row = serenity::builder::CreateActionRow::Buttons(vec![
+                demote_button.disabled(true),
+                cancel_button.disabled(true),
+            ]);
+            reply.edit(ctx, poise::CreateReply::default().components(vec![disabled_row])).await?;
+            return Ok(());
+        }
+    };
+
+    if interaction.data.custom_id == cancel_btn_id {
+        let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Acknowledge).await;
+        let cancel_embed = serenity::builder::CreateEmbed::new()
+            .title("Attendance Audit - Cancelled")
+            .description(format!("Action was cancelled by <@{}>. No roles or nicknames were modified.", interaction.user.id))
+            .color(0x7f8c8d);
+        reply.edit(ctx, poise::CreateReply::default().embed(cancel_embed).components(vec![])).await?;
+        return Ok(());
+    }
+
+    if interaction.data.custom_id == demote_btn_id {
+        let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Acknowledge).await;
+        
+        let progress_embed = serenity::builder::CreateEmbed::new()
+            .title("Attendance Audit - Processing Demotions...")
+            .description(format!("Demoting {} member(s), assigning Guest role, and resetting nicknames. Please wait...", unrecorded_members.len()))
+            .color(0x3498db);
+        reply.edit(ctx, poise::CreateReply::default().embed(progress_embed).components(vec![])).await?;
+
+        let mut success_count = 0;
+        let mut fail_count = 0;
+        let guest_role_id = serenity::model::id::RoleId::new(crate::types::ROLE_GUEST_ID);
+
+        for m in &unrecorded_members {
+            // Edit member: reset nickname to default and replace all roles with Guest role
+            let edit_builder = serenity::builder::EditMember::new()
+                .nickname("")
+                .roles(vec![guest_role_id]);
+
+            match guild_id.edit_member(ctx.http(), m.user.id, edit_builder).await {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    tracing::warn!("Failed to demote member {}: {:?}", m.user.id, e);
+                    fail_count += 1;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+
+        let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_audit_demote', $1, $2, $3)")
+            .bind(interaction.user.id.to_string())
+            .bind(&interaction.user.name)
+            .bind(format!("Demoted {} unrecorded members to Guest (failed: {})", success_count, fail_count))
+            .execute(db_pool)
+            .await;
+
+        let finished_embed = serenity::builder::CreateEmbed::new()
+            .title("Attendance Audit - Demotion Completed")
+            .description("Role removal and demotion process has finished for all unrecorded members.")
+            .color(0x2ecc71)
+            .field("Successfully Demoted", format!("{} members", success_count), true)
+            .field("Failed / Hierarchy Shield", format!("{} members", fail_count), true)
+            .field("Assigned Role", format!("<@&{}>", crate::types::ROLE_GUEST_ID), false)
+            .field("Nicknames", "Reset to Discord default", false)
+            .field("Exempt Veterans Preserved", format!("{} members", exempt_veterans.len()), false)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance Audit"));
+
+        reply.edit(ctx, poise::CreateReply::default().embed(finished_embed).components(vec![])).await?;
+    }
+
+    Ok(())
+}
+
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absenaudit", aliases("absen_audit", "reviewabsen"))]
+pub async fn absenaudit(ctx: Context<'_>) -> Result<(), Error> {
+    show_absen_audit(ctx).await
+}
+
+#[poise::command(slash_command, prefix_command, rename = "audit", category = "Admin")]
+pub async fn absen_manage_audit(ctx: Context<'_>) -> Result<(), Error> {
+    show_absen_audit(ctx).await
 }
 
 #[poise::command(slash_command, prefix_command, rename = "clear", category = "Admin")]

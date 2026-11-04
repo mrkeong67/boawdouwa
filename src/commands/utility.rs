@@ -583,18 +583,43 @@ async fn fetch_roblox_identity(
 #[poise::command(slash_command, prefix_command, category = "Utility")]
 pub async fn absen(
     ctx: Context<'_>,
-    #[description = "Username Roblox yang terdaftar di website 4FUN"] roblox_username: Option<String>,
+    #[description = "Your registered Roblox username on the 4FUN website"] roblox_username: Option<String>,
 ) -> Result<(), Error> {
     let guild_id = match ctx.guild_id() {
         Some(id) => id,
         None => {
-            crate::utils::embeds::send_embed(ctx, "Error", "Perintah absen hanya dapat digunakan di dalam server.", 0xED4245).await?;
+            crate::utils::embeds::send_embed(ctx, "Error", "This command can only be used within a server.", 0xED4245).await?;
             return Ok(());
         }
     };
     let db_pool = &ctx.data().db_pool;
     let author_id = ctx.author().id.to_string();
     let author_username = ctx.author().name.clone();
+
+    // Verify author has the required Member role
+    let author_member = match ctx.author_member().await {
+        Some(m) => m,
+        None => {
+            crate::utils::embeds::send_embed(ctx, "Error", "Could not retrieve your server member profile.", 0xED4245).await?;
+            return Ok(());
+        }
+    };
+
+    let has_member_role = author_member.roles.iter().any(|r| r.get() == crate::types::ROLE_MEMBER_ID);
+    if !has_member_role {
+        let embed = serenity::builder::CreateEmbed::new()
+            .title("Attendance Denied")
+            .description("Only clan members holding the Member role are eligible to record monthly attendance.")
+            .color(0xED4245)
+            .field("Status", "`DENIED`", true)
+            .field("Discord Member", format!("<@{}>", author_id), true)
+            .field("Required Role", format!("<@&{}>", crate::types::ROLE_MEMBER_ID), true)
+            .field("Reason", "You must have the Member role in this server to record attendance.", false)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
+
+        ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        return Ok(());
+    }
 
     // 1. Check if user ran ffabsen without arguments
     let raw_username = match roblox_username {
@@ -621,29 +646,29 @@ pub async fn absen(
 
                 let display_val = r_disp.unwrap_or(r_name);
                 let username_val = r_user.unwrap_or_else(|| display_val.clone());
-                let role_val = r_role.map(|id| format!("<@&{}> (`{}`)", id, id)).unwrap_or_else(|| "Tidak ada role".to_string());
-                let time_val = r_time.map(|t| format!("<t:{}:F>", t.and_utc().timestamp())).unwrap_or_else(|| "Tercatat".to_string());
+                let role_val = r_role.map(|id| format!("<@&{}> (`{}`)", id, id)).unwrap_or_else(|| "None".to_string());
+                let time_val = r_time.map(|t| format!("<t:{}:F>", t.and_utc().timestamp())).unwrap_or_else(|| "Recorded".to_string());
 
                 let embed = serenity::builder::CreateEmbed::new()
-                    .title("📋 Status Absen Anda")
-                    .description("Kamu sudah tercatat melakukan absen bulanan.")
+                    .title("Attendance Status")
+                    .description("Your monthly attendance has already been recorded.")
                     .color(0x2ecc71)
-                    .field("📊 Status", format!("`{}` ✅", r_status), true)
-                    .field("👤 Member Discord", format!("<@{}> (`@{}`)", author_id, author_username), true)
-                    .field("🆔 ID Discord", format!("`{}`", author_id), true)
-                    .field("🎭 Role Discord", role_val, false)
-                    .field("🎮 Username Roblox", format!("`@{}`", username_val), true)
-                    .field("✨ Display Name Roblox", format!("`{}`", display_val), true)
-                    .field("🕒 Waktu Absen", time_val, false)
+                    .field("Status", format!("`{}`", r_status), true)
+                    .field("Discord Member", format!("<@{}> (`@{}`)", author_id, author_username), true)
+                    .field("Discord ID", format!("`{}`", author_id), true)
+                    .field("Discord Role", role_val, false)
+                    .field("Roblox Username", format!("`@{}`", username_val), true)
+                    .field("Roblox Display Name", format!("`{}`", display_val), true)
+                    .field("Recorded At", time_val, false)
                     .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
                 ctx.send(poise::CreateReply::default().embed(embed)).await?;
                 return Ok(());
             } else {
                 let embed = serenity::builder::CreateEmbed::new()
-                    .title("⚠️ Username Roblox Diperlukan")
-                    .description("Silakan masukkan username Roblox kamu yang sudah terdaftar di website 4FUN Clan.\n\n**Format Penggunaan:**\n`ffabsen <username_roblox>`\n\n*Contoh:*\n`ffabsen phy0nn`")
-                    .color(0xf1c40f)
+                    .title("Roblox Username Required")
+                    .description("Please provide your Roblox username registered on the 4FUN Clan website.\n\n**Usage:**\n`ffabsen <roblox_username>`\n\n*Example:*\n`ffabsen phy0nn`")
+                    .color(0x3498db)
                     .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • https://www.4funclan.site/members"));
 
                 ctx.send(poise::CreateReply::default().embed(embed)).await?;
@@ -654,10 +679,15 @@ pub async fn absen(
 
     let clean_input = raw_username.trim().trim_start_matches('@');
 
-    // Shortcut for staff/admin: ffabsen list
+    // Shortcuts for staff/admin: ffabsen list / ffabsen audit
     if clean_input.eq_ignore_ascii_case("list") || clean_input.eq_ignore_ascii_case("rekap") {
         if crate::utils::checks::is_staff(ctx).await.unwrap_or(false) {
             return crate::commands::admin::show_absen_list(ctx).await;
+        }
+    }
+    if clean_input.eq_ignore_ascii_case("audit") || clean_input.eq_ignore_ascii_case("review") {
+        if crate::utils::checks::is_staff(ctx).await.unwrap_or(false) {
+            return crate::commands::admin::show_absen_audit(ctx).await;
         }
     }
 
@@ -679,12 +709,12 @@ pub async fn absen(
 
     if !is_open {
         let embed = serenity::builder::CreateEmbed::new()
-            .title("❌ Absen Ditolak (DENIED)")
-            .description("Sesi absen bulanan saat ini sedang **DITUTUP**.")
+            .title("Attendance Closed")
+            .description("The monthly attendance session is currently closed.")
             .color(0xED4245)
-            .field("📊 Status", "`DENIED` ❌", true)
-            .field("👤 Member Discord", format!("<@{}>", author_id), true)
-            .field("⚠️ Alasan", "Sesi absen belum dibuka oleh Admin/Staff. Silakan tunggu pengumuman resmi.", false)
+            .field("Status", "`DENIED`", true)
+            .field("Discord Member", format!("<@{}>", author_id), true)
+            .field("Reason", "Attendance has not been opened by Clan Staff. Please wait for an official announcement.", false)
             .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
         ctx.send(poise::CreateReply::default().embed(embed)).await?;
@@ -694,12 +724,12 @@ pub async fn absen(
     if let Some(required_channel) = target_channel_id {
         if ctx.channel_id().to_string() != required_channel {
             let embed = serenity::builder::CreateEmbed::new()
-                .title("❌ Absen Ditolak (DENIED)")
-                .description("Channel absen tidak sesuai.")
+                .title("Invalid Channel")
+                .description("Attendance is restricted to a designated channel.")
                 .color(0xED4245)
-                .field("📊 Status", "`DENIED` ❌", true)
-                .field("👤 Member Discord", format!("<@{}>", author_id), true)
-                .field("⚠️ Alasan", format!("Perintah absen hanya diperbolehkan di channel <#{}>.", required_channel), false)
+                .field("Status", "`DENIED`", true)
+                .field("Discord Member", format!("<@{}>", author_id), true)
+                .field("Reason", format!("Attendance commands can only be used in <#{}>.", required_channel), false)
                 .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
             ctx.send(poise::CreateReply::default().embed(embed)).await?;
@@ -730,7 +760,6 @@ pub async fn absen(
         }
     }
 
-    let clean_input = raw_username.trim().trim_start_matches('@');
     let parsed: serde_json::Value = serde_json::from_str(&clan_data_str).unwrap_or(serde_json::Value::Null);
     let members_arr = parsed.as_array().or_else(|| parsed["members"].as_array());
 
@@ -751,14 +780,14 @@ pub async fn absen(
         Some(m) => m,
         None => {
             let embed = serenity::builder::CreateEmbed::new()
-                .title("❌ Absen Ditolak (DENIED)")
-                .description("Data kamu tidak ditemukan di database website.")
+                .title("Attendance Denied")
+                .description("Account not found in the clan database.")
                 .color(0xED4245)
-                .field("📊 Status", "`DENIED` ❌", true)
-                .field("👤 Member Discord", format!("<@{}>", author_id), true)
-                .field("🆔 ID Discord", format!("`{}`", author_id), true)
-                .field("🎮 Username Input", format!("`@{}`", clean_input), true)
-                .field("⚠️ Alasan", format!("Username Roblox `@{}` tidak terdaftar di website 4FUN Clan. Pastikan kamu sudah mendaftarkan akunmu di website (https://www.4funclan.site/members) atau hubungi Staff.", clean_input), false)
+                .field("Status", "`DENIED`", true)
+                .field("Discord Member", format!("<@{}>", author_id), true)
+                .field("Discord ID", format!("`{}`", author_id), true)
+                .field("Input Username", format!("`@{}`", clean_input), true)
+                .field("Reason", format!("Roblox username `@{}` is not registered on the 4FUN Clan website (https://www.4funclan.site/members). Please check your spelling or contact Clan Staff.", clean_input), false)
                 .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
             let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_denied_not_found', $1, $2, $3)")
@@ -779,25 +808,25 @@ pub async fn absen(
         let registered_mention = if !reg_discord_id.is_empty() {
             format!("<@{}> (`{}`)", reg_discord_id, reg_discord_id)
         } else {
-            "belum ditautkan".to_string()
+            "Not linked".to_string()
         };
 
         let embed = serenity::builder::CreateEmbed::new()
-            .title("❌ Absen Ditolak (DENIED)")
-            .description("Kamu tidak dapat mengabsenkan akun milik orang lain!")
+            .title("Attendance Denied")
+            .description("You cannot submit attendance for another member's account.")
             .color(0xED4245)
-            .field("📊 Status", "`DENIED` ❌", true)
-            .field("👤 Pengirim Absen", format!("<@{}>", author_id), true)
-            .field("🆔 ID Discord Kamu", format!("`{}`", author_id), true)
-            .field("🎮 Username Roblox", format!("`@{}`", member_data["username"].as_str().unwrap_or(clean_input)), true)
-            .field("🔗 Akun Discord Terdaftar", registered_mention, false)
-            .field("⚠️ Alasan", "Akun Roblox ini terdaftar atas akun Discord lain di website 4FUN Clan. 1 orang hanya bisa absen untuk akunnya sendiri.", false)
+            .field("Status", "`DENIED`", true)
+            .field("Submitted By", format!("<@{}>", author_id), true)
+            .field("Your Discord ID", format!("`{}`", author_id), true)
+            .field("Roblox Username", format!("`@{}`", member_data["username"].as_str().unwrap_or(clean_input)), true)
+            .field("Registered Discord", registered_mention, false)
+            .field("Reason", "This Roblox account is registered to a different Discord account in the 4FUN Clan database. Each member may only submit their own attendance.", false)
             .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
         let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_denied_discord_mismatch', $1, $2, $3)")
             .bind(&author_id)
             .bind(&author_username)
-            .bind(format!("DENIED: Attempted to absen Roblox '{}' registered to Discord ID '{}'", clean_input, reg_discord_id))
+            .bind(format!("DENIED: Attempted to submit Roblox '{}' registered to Discord ID '{}'", clean_input, reg_discord_id))
             .execute(db_pool)
             .await;
 
@@ -820,13 +849,13 @@ pub async fn absen(
         let prev_roblox: String = row.try_get("roblox_username").unwrap_or_else(|_| row.get("roblox_name"));
         
         let embed = serenity::builder::CreateEmbed::new()
-            .title("❌ Absen Ditolak (DENIED)")
-            .description("Kamu sudah tercatat melakukan absen untuk periode bulan ini!")
+            .title("Attendance Denied")
+            .description("You have already submitted your attendance for this monthly cycle.")
             .color(0xED4245)
-            .field("📊 Status", "`DENIED` ❌", true)
-            .field("👤 Member Discord", format!("<@{}>", author_id), true)
-            .field("🎮 Akun Roblox Tercatat", format!("`@{}`", prev_roblox), true)
-            .field("⚠️ Alasan", "Setiap member hanya diperbolehkan melakukan absen 1 kali per bulan (tidak bisa double absen). Jika ada kesalahan data, silakan hubungi Staff / Admin.", false)
+            .field("Status", "`DENIED`", true)
+            .field("Discord Member", format!("<@{}>", author_id), true)
+            .field("Recorded Roblox", format!("`@{}`", prev_roblox), true)
+            .field("Reason", "Each member may only submit attendance once per cycle (duplicate submissions are not allowed). Contact Staff if you need assistance.", false)
             .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
         let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_denied_duplicate_user', $1, $2, $3)")
@@ -856,13 +885,13 @@ pub async fn absen(
         let other_discord_id: String = row.get("discord_id");
         
         let embed = serenity::builder::CreateEmbed::new()
-            .title("❌ Absen Ditolak (DENIED)")
-            .description("Akun Roblox ini sudah pernah diabsenkan sebelumnya!")
+            .title("Attendance Denied")
+            .description("This Roblox account has already been recorded.")
             .color(0xED4245)
-            .field("📊 Status", "`DENIED` ❌", true)
-            .field("👤 Member Discord", format!("<@{}>", author_id), true)
-            .field("🎮 Username Roblox", format!("`@{}`", website_username), true)
-            .field("⚠️ Alasan", format!("Akun Roblox `@{}` sudah diabsenkan oleh <@{}>! 1 akun Roblox hanya dapat diabsenkan 1 kali.", website_username, other_discord_id), false)
+            .field("Status", "`DENIED`", true)
+            .field("Discord Member", format!("<@{}>", author_id), true)
+            .field("Roblox Username", format!("`@{}`", website_username), true)
+            .field("Reason", format!("Roblox account `@{}` was already recorded by <@{}>. Each Roblox account can only be submitted once.", website_username, other_discord_id), false)
             .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
         let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_denied_duplicate_roblox', $1, $2, $3)")
@@ -881,7 +910,6 @@ pub async fn absen(
     let roblox_profile_url = member_data["robloxProfile"].as_str();
     let (mut rbx_username, mut rbx_display_name, _rbx_id) = fetch_roblox_identity(&client, website_username, roblox_profile_url).await;
 
-    // If display name is fallback and website has specific clan name, use clan name
     if let Some(clan_name) = member_data["name"].as_str() {
         if !clan_name.is_empty() && (rbx_display_name.is_empty() || rbx_display_name == rbx_username) {
             rbx_display_name = clan_name.to_string();
@@ -913,7 +941,7 @@ pub async fn absen(
     let role_display = match (&primary_role_id, &primary_role_name) {
         (Some(id), Some(name)) => format!("<@&{}> (`{}` - {})", id, id, name),
         (Some(id), None) => format!("<@&{}> (`{}`)", id, id),
-        _ => "Tidak ada role".to_string(),
+        _ => "None".to_string(),
     };
 
     let clan_roles_str = member_data["roles"].as_array()
@@ -945,7 +973,7 @@ pub async fn absen(
     .await;
 
     if res.is_err() {
-        crate::utils::embeds::send_embed(ctx, "Error", "Gagal menyimpan data absen ke database. Silakan laporkan kepada Admin.", 0xED4245).await?;
+        crate::utils::embeds::send_embed(ctx, "Error", "Failed to save attendance record to the database. Please contact an Administrator.", 0xED4245).await?;
         return Ok(());
     }
 
@@ -959,18 +987,18 @@ pub async fn absen(
 
     let now_ts = chrono::Utc::now().timestamp();
     let mut embed = serenity::builder::CreateEmbed::new()
-        .title("✅ Absen Berhasil (ACCEPTED)")
-        .description("Kehadiran bulanan kamu telah berhasil dicatat dan diverifikasi!")
+        .title("Attendance Recorded")
+        .description("Your monthly attendance has been successfully verified and recorded.")
         .color(0x2ecc71)
-        .field("📊 Status", "`ACCEPTED` ✅", true)
-        .field("👤 Member Discord", format!("<@{}> (`@{}`)", author_id, author_username), true)
-        .field("🆔 ID Discord", format!("`{}`", author_id), true)
-        .field("🎭 Role Discord", role_display, false)
-        .field("🎮 Username Roblox", format!("`@{}`", rbx_username), true)
-        .field("✨ Display Name Roblox", format!("`{}`", rbx_display_name), true)
-        .field("🏷️ Role Clan Website", format!("`{}`", clan_roles_str), true)
-        .field("🕒 Waktu Absen", format!("<t:{}:F>", now_ts), false)
-        .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Sesi Absen Bulanan"));
+        .field("Status", "`ACCEPTED`", true)
+        .field("Discord Member", format!("<@{}> (`@{}`)", author_id, author_username), true)
+        .field("Discord ID", format!("`{}`", author_id), true)
+        .field("Discord Role", role_display, false)
+        .field("Roblox Username", format!("`@{}`", rbx_username), true)
+        .field("Roblox Display Name", format!("`{}`", rbx_display_name), true)
+        .field("Clan Role", format!("`{}`", clan_roles_str), true)
+        .field("Timestamp", format!("<t:{}:F>", now_ts), false)
+        .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Monthly Attendance"));
 
     if let Some(img_url) = member_data["image"].as_str() {
         if img_url.starts_with("http") {
