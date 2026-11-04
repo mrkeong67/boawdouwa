@@ -652,6 +652,15 @@ pub async fn absen(
         }
     };
 
+    let clean_input = raw_username.trim().trim_start_matches('@');
+
+    // Shortcut for staff/admin: ffabsen list
+    if clean_input.eq_ignore_ascii_case("list") || clean_input.eq_ignore_ascii_case("rekap") {
+        if crate::utils::checks::is_staff(ctx).await.unwrap_or(false) {
+            return crate::commands::admin::show_absen_list(ctx).await;
+        }
+    }
+
     // 2. Check if attendance session is currently open
     let state_row = sqlx::query("SELECT is_open, channel_id FROM khivella_absen_state WHERE guild_id = $1")
         .bind(guild_id.to_string())

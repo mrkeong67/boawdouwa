@@ -765,8 +765,7 @@ pub async fn absen_manage_close(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, rename = "list", category = "Admin")]
-pub async fn absen_manage_list(ctx: Context<'_>) -> Result<(), Error> {
+pub async fn show_absen_list(ctx: Context<'_>) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
     let db_pool = &ctx.data().db_pool;
 
@@ -796,28 +795,40 @@ pub async fn absen_manage_list(ctx: Context<'_>) -> Result<(), Error> {
                 let roblox_username: Option<String> = r.try_get("roblox_username").unwrap_or(None);
                 let roblox_display_name: Option<String> = r.try_get("roblox_display_name").unwrap_or(None);
                 let role_id: Option<String> = r.try_get("role_id").unwrap_or(None);
-                let _status: String = r.try_get("status").unwrap_or_else(|_| "ACCEPTED".to_string());
                 
                 let disp = roblox_display_name.unwrap_or(roblox_name);
-                let u_name = roblox_username.map(|u| format!(" (@{})", u)).unwrap_or_default();
-                let role_str = role_id.map(|rid| format!(" | <@&{}>", rid)).unwrap_or_default();
+                let u_name = roblox_username.unwrap_or_else(|| disp.clone());
+                let role_str = role_id.map(|rid| format!(" | Role: <@&{}>", rid)).unwrap_or_default();
 
-                let line = format!("{}. **{}**{} - <@{}> (`@{}`){}\n", i + 1, disp, u_name, discord_id, discord_username, role_str);
+                let line = format!(
+                    "{}. 🎮 **{}** (`@{}`)\n   👤 Discord: **{}** | ID: `{}` (<@{}>){}\n",
+                    i + 1, disp, u_name, discord_username, discord_id, discord_id, role_str
+                );
                 
                 // Keep it under embed limits
                 if desc.len() + line.len() > 3900 {
-                    desc.push_str("...dan lainnya.");
+                    desc.push_str("...dan data lainnya telah dipotong (melebihi batas embed).");
                     break;
                 }
                 desc.push_str(&line);
             }
-            send_embed(ctx, format!("Data Absen Bulanan (Total: {})", results.len()).as_str(), &desc, 0x3498db).await?;
+            send_embed(ctx, format!("📋 Rekap Absen Bulanan (Total: {} Member)", results.len()).as_str(), &desc, 0x2ecc71).await?;
         },
         Err(e) => {
             send_embed(ctx, "Error", &format!("Gagal mengambil data absen: {}", e), 0xED4245).await?;
         }
     }
     Ok(())
+}
+
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absenlist", aliases("rekapabsen", "absen_list"))]
+pub async fn absenlist(ctx: Context<'_>) -> Result<(), Error> {
+    show_absen_list(ctx).await
+}
+
+#[poise::command(slash_command, prefix_command, rename = "list", category = "Admin")]
+pub async fn absen_manage_list(ctx: Context<'_>) -> Result<(), Error> {
+    show_absen_list(ctx).await
 }
 
 #[poise::command(slash_command, prefix_command, rename = "clear", category = "Admin")]

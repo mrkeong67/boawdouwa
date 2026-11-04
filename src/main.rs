@@ -304,7 +304,7 @@ async fn main() {
                 booster(), sticky(), restart(), checknames(), autothread(),
                 ping(), userinfo(), serverinfo(), avatar(), help(),
                 report(), stats(), about(), profile(), members(),
-                absen(), absen_manage(), bday(), bday_manage(), ffevent(), ffevent_manage(),
+                absen(), absen_manage(), absenlist(), bday(), bday_manage(), ffevent(), ffevent_manage(),
                 fftrack(),
             ],
             prefix_options: poise::PrefixFrameworkOptions {
