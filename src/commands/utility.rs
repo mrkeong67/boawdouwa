@@ -771,7 +771,10 @@ pub async fn absen(
     }
 
     let parsed: serde_json::Value = serde_json::from_str(&clan_data_str).unwrap_or(serde_json::Value::Null);
-    let members_arr = parsed.as_array().or_else(|| parsed["members"].as_array());
+    let members_arr = parsed.as_array()
+        .or_else(|| parsed["members"].as_array())
+        .or_else(|| parsed["data"]["members"].as_array())
+        .or_else(|| parsed["data"].as_array());
 
     let mut matched_member: Option<serde_json::Value> = None;
     if let Some(arr) = members_arr {
@@ -798,7 +801,7 @@ pub async fn absen(
                 .field("Discord ID", format!("`{}`", author_id), true)
                 .field("Input Username", format!("`@{}`", clean_input), true)
                 .field("Reason", format!("Roblox username `@{}` is not registered on the 4FUN Clan website (https://www.4funclan.site/members). Please check your spelling or contact Clan Staff.", clean_input), false)
-                .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
+                .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Website Verification"));
 
             let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_denied_not_found', $1, $2, $3)")
                 .bind(&author_id)
@@ -813,30 +816,51 @@ pub async fn absen(
     };
 
     // 5. Check 1-to-1 linkage: Discord ID match ("gabisa absenin orang lain")
-    let reg_discord_id = member_data["socials"]["discordId"].as_str().unwrap_or("").trim();
-    if reg_discord_id != author_id {
-        let registered_mention = if !reg_discord_id.is_empty() {
-            format!("<@{}> (`{}`)", reg_discord_id, reg_discord_id)
-        } else {
-            "Not linked".to_string()
-        };
+    let reg_discord_id = member_data["socials"]["discordId"]
+        .as_str()
+        .map(|s| s.trim())
+        .unwrap_or("");
 
+    if reg_discord_id.is_empty() {
         let embed = serenity::builder::CreateEmbed::new()
             .title("Attendance Denied")
+            .description("No Discord account is linked to this Roblox user on the website.")
+            .color(0xED4245)
+            .field("Status", "`DENIED`", true)
+            .field("Submitted By", format!("<@{}>", author_id), true)
+            .field("Your Discord ID", format!("`{}`", author_id), true)
+            .field("Roblox Username", format!("`@{}`", member_data["username"].as_str().unwrap_or(clean_input)), true)
+            .field("Reason", "This Roblox account does not have a linked Discord ID in the 4FUN Clan database. Please update your profile on the website or contact Clan Staff.", false)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Discord Link Required"));
+
+        let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_denied_no_discord_link', $1, $2, $3)")
+            .bind(&author_id)
+            .bind(&author_username)
+            .bind(format!("DENIED: Roblox '{}' has no Discord ID linked on website", clean_input))
+            .execute(db_pool)
+            .await;
+
+        ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        return Ok(());
+    }
+
+    if reg_discord_id != author_id {
+        let embed = serenity::builder::CreateEmbed::new()
+            .title("Attendance Denied - Proxy Not Allowed")
             .description("You cannot submit attendance for another member's account.")
             .color(0xED4245)
             .field("Status", "`DENIED`", true)
             .field("Submitted By", format!("<@{}>", author_id), true)
             .field("Your Discord ID", format!("`{}`", author_id), true)
             .field("Roblox Username", format!("`@{}`", member_data["username"].as_str().unwrap_or(clean_input)), true)
-            .field("Registered Discord", registered_mention, false)
-            .field("Reason", "This Roblox account is registered to a different Discord account in the 4FUN Clan database. Each member may only submit their own attendance.", false)
-            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
+            .field("Registered Discord", format!("<@{}> (`{}`)", reg_discord_id, reg_discord_id), false)
+            .field("Reason", "The Discord ID you are currently using does not match the registered Discord ID for this Roblox account on the 4FUN website. Each member must submit their own attendance.", false)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Anti-Proxy Protection"));
 
         let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_denied_discord_mismatch', $1, $2, $3)")
             .bind(&author_id)
             .bind(&author_username)
-            .bind(format!("DENIED: Attempted to submit Roblox '{}' registered to Discord ID '{}'", clean_input, reg_discord_id))
+            .bind(format!("DENIED: Anti-Proxy triggered! User <@{}> tried to submit Roblox '{}' belonging to Discord ID '{}'", author_id, clean_input, reg_discord_id))
             .execute(db_pool)
             .await;
 
