@@ -701,7 +701,7 @@ pub async fn autothread_list(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_check", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove"), rename = "absen_manage")]
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_check", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove", "absen_manage_reset_guests"), rename = "absen_manage")]
 pub async fn absen_manage(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
@@ -1345,6 +1345,186 @@ pub async fn absen_manage_remove(
         send_embed(ctx, "Error", "Failed to remove the attendance record.", 0xED4245).await?;
     }
     Ok(())
+}
+
+pub async fn execute_reset_guest_nicks(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer().await?;
+
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id,
+        None => {
+            send_embed(ctx, "Error", "This command can only be used within a server.", 0xED4245).await?;
+            return Ok(());
+        }
+    };
+    let db_pool = &ctx.data().db_pool;
+
+    // 1. Fetch all guild members via pagination
+    let mut all_members = Vec::new();
+    let mut after: Option<u64> = None;
+    loop {
+        let chunk = ctx.http().get_guild_members(guild_id, Some(1000), after).await?;
+        if chunk.is_empty() {
+            break;
+        }
+        if let Some(last) = chunk.last() {
+            after = Some(last.user.id.get());
+        }
+        let count = chunk.len();
+        all_members.extend(chunk);
+        if count < 1000 {
+            break;
+        }
+    }
+
+    // 2. Filter for non-bot members with Guest role who currently have a custom nickname
+    let guests_with_nick: Vec<serenity::model::guild::Member> = all_members
+        .into_iter()
+        .filter(|m| {
+            !m.user.bot
+                && m.roles.iter().any(|r| r.get() == crate::types::ROLE_GUEST_ID)
+                && m.nick.is_some()
+        })
+        .collect();
+
+    if guests_with_nick.is_empty() {
+        let embed = serenity::builder::CreateEmbed::new()
+            .title("Guest Nicknames - All Clean")
+            .description(format!(
+                "No members with the Guest role (<@&{}>) have custom nicknames set. All guest display names are already at their default Discord names.",
+                crate::types::ROLE_GUEST_ID
+            ))
+            .color(0x2ecc71)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Member Management"));
+
+        ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        return Ok(());
+    }
+
+    // 3. Create Confirmation UI with safety prompt
+    let confirm_btn_id = format!("guest_nick_confirm_{}", ctx.id());
+    let cancel_btn_id = format!("guest_nick_cancel_{}", ctx.id());
+
+    let confirm_btn = serenity::builder::CreateButton::new(&confirm_btn_id)
+        .label(format!("Reset All Guest Nicknames ({})", guests_with_nick.len()))
+        .style(serenity::all::ButtonStyle::Danger);
+
+    let cancel_btn = serenity::builder::CreateButton::new(&cancel_btn_id)
+        .label("Cancel")
+        .style(serenity::all::ButtonStyle::Secondary);
+
+    let row = serenity::builder::CreateActionRow::Buttons(vec![confirm_btn.clone(), cancel_btn.clone()]);
+
+    let embed = serenity::builder::CreateEmbed::new()
+        .title("Reset Guest Display Names")
+        .description(format!(
+            "Found **{}** member(s) holding the Guest role (<@&{}>) with custom nicknames set (e.g. `GUEST ...`).\n\n\
+            Click **Reset All Guest Nicknames** below to clear their server display names back to their original Discord names.\n\n\
+            *• A safe rate-limit delay of 400ms per user will be applied.*\n\
+            *• Members whose names are already default will be skipped automatically.*",
+            guests_with_nick.len(),
+            crate::types::ROLE_GUEST_ID
+        ))
+        .color(0xe67e22)
+        .field("Target Role", format!("<@&{}>", crate::types::ROLE_GUEST_ID), true)
+        .field("Affected Members", format!("{} members", guests_with_nick.len()), true)
+        .footer(serenity::builder::CreateEmbedFooter::new("This action will reset nicknames to Discord default."));
+
+    let reply = ctx.send(poise::CreateReply::default().embed(embed).components(vec![row])).await?;
+    let msg = reply.message().await?;
+
+    let interaction = msg
+        .await_component_interaction(ctx)
+        .timeout(std::time::Duration::from_secs(120))
+        .await;
+
+    let interaction = match interaction {
+        Some(i) => i,
+        None => {
+            let disabled_row = serenity::builder::CreateActionRow::Buttons(vec![
+                confirm_btn.disabled(true),
+                cancel_btn.disabled(true),
+            ]);
+            let _ = reply.edit(ctx, poise::CreateReply::default().components(vec![disabled_row])).await;
+            return Ok(());
+        }
+    };
+
+    if interaction.user.id != ctx.author().id {
+        let is_staff = crate::utils::checks::is_staff(ctx).await.unwrap_or(false);
+        if !is_staff {
+            let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Message(
+                serenity::builder::CreateInteractionResponseMessage::new()
+                    .content("Only staff members can authorize this action.")
+                    .ephemeral(true)
+            )).await;
+            return Ok(());
+        }
+    }
+
+    let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Acknowledge).await;
+
+    if interaction.data.custom_id == cancel_btn_id {
+        let cancel_embed = serenity::builder::CreateEmbed::new()
+            .title("Reset Guest Nicknames - Cancelled")
+            .description(format!("Action was cancelled by <@{}>. No nicknames were modified.", interaction.user.id))
+            .color(0x7f8c8d);
+        let _ = reply.edit(ctx, poise::CreateReply::default().embed(cancel_embed).components(vec![])).await;
+        return Ok(());
+    }
+
+    if interaction.data.custom_id == confirm_btn_id {
+        let progress_embed = serenity::builder::CreateEmbed::new()
+            .title("Resetting Guest Display Names...")
+            .description(format!("Clearing custom nicknames for **{}** member(s). Please wait...", guests_with_nick.len()))
+            .color(0x3498db);
+        let _ = reply.edit(ctx, poise::CreateReply::default().embed(progress_embed).components(vec![])).await;
+
+        let mut success_count = 0;
+        let mut fail_count = 0;
+
+        for m in &guests_with_nick {
+            let edit_builder = serenity::builder::EditMember::new().nickname("");
+            match guild_id.edit_member(ctx.http(), m.user.id, edit_builder).await {
+                Ok(_) => success_count += 1,
+                Err(e) => {
+                    tracing::warn!("Failed to reset nickname for guest {}: {:?}", m.user.id, e);
+                    fail_count += 1;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
+
+        let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('guest_nicks_reset_all', $1, $2, $3)")
+            .bind(interaction.user.id.to_string())
+            .bind(&interaction.user.name)
+            .bind(format!("Reset nicknames for {} guest members (failed: {})", success_count, fail_count))
+            .execute(db_pool)
+            .await;
+
+        let finished_embed = serenity::builder::CreateEmbed::new()
+            .title("Guest Nicknames Reset Complete")
+            .description("Successfully cleared custom server nicknames for all members with the Guest role back to their default Discord names.")
+            .color(0x2ecc71)
+            .field("Successfully Reset", format!("{} members", success_count), true)
+            .field("Failed / Shielded", format!("{} members", fail_count), true)
+            .field("Target Role", format!("<@&{}>", crate::types::ROLE_GUEST_ID), false)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Member Management"));
+
+        let _ = reply.edit(ctx, poise::CreateReply::default().embed(finished_embed).components(vec![])).await;
+    }
+
+    Ok(())
+}
+
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "resetguestnicks", aliases("reset_guest_nicks", "clearguestnicks", "resetguests"))]
+pub async fn resetguestnicks(ctx: Context<'_>) -> Result<(), Error> {
+    execute_reset_guest_nicks(ctx).await
+}
+
+#[poise::command(slash_command, prefix_command, rename = "reset_guests", category = "Admin")]
+pub async fn absen_manage_reset_guests(ctx: Context<'_>) -> Result<(), Error> {
+    execute_reset_guest_nicks(ctx).await
 }
 
 #[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("bday_manage_setchannel"), rename = "bday_manage")]

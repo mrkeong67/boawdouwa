@@ -1025,13 +1025,7 @@ pub async fn absen(
         .field("Timestamp", format!("<t:{}:F>", now_ts), false)
         .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Monthly Attendance"));
 
-    if let Some(img_url) = member_data["image"].as_str() {
-        if img_url.starts_with("http") {
-            embed = embed.thumbnail(img_url);
-        }
-    } else {
-        embed = embed.thumbnail(ctx.author().face());
-    }
+    embed = embed.thumbnail(ctx.author().face());
 
     ctx.send(poise::CreateReply::default().embed(embed)).await?;
     Ok(())
