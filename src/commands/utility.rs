@@ -679,7 +679,7 @@ pub async fn absen(
 
     let clean_input = raw_username.trim().trim_start_matches('@');
 
-    // Shortcuts for staff/admin: ffabsen list / ffabsen check / ffabsen audit / ffabsen purge
+    // Shortcuts for staff/admin: ffabsen list / ffabsen check / ffabsen purge
     if clean_input.eq_ignore_ascii_case("list") || clean_input.eq_ignore_ascii_case("rekap") {
         if crate::utils::checks::is_staff(ctx).await.unwrap_or(false) {
             return crate::commands::admin::show_absen_list(ctx).await;

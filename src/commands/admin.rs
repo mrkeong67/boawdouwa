@@ -701,7 +701,7 @@ pub async fn autothread_list(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove", "absen_manage_audit", "absen_manage_check", "absen_manage_purge"), rename = "absen_manage")]
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_check", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove"), rename = "absen_manage")]
 pub async fn absen_manage(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
@@ -819,11 +819,6 @@ pub async fn show_absen_list(ctx: Context<'_>) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absenlist", aliases("rekapabsen", "absen_list"))]
-pub async fn absenlist(ctx: Context<'_>) -> Result<(), Error> {
-    show_absen_list(ctx).await
 }
 
 #[poise::command(slash_command, prefix_command, rename = "list", category = "Admin")]
@@ -1297,43 +1292,10 @@ pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absenaudit", aliases("absen_audit", "reviewabsen"))]
-pub async fn absenaudit(ctx: Context<'_>) -> Result<(), Error> {
-    show_absen_audit(ctx).await
-}
-
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absencheck", aliases("absen_check"))]
-pub async fn absencheck(ctx: Context<'_>) -> Result<(), Error> {
-    show_absen_audit(ctx).await
-}
-
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absenpurge", aliases("absen_purge"))]
-pub async fn absenpurge(
-    ctx: Context<'_>,
-    #[description = "Member to purge to Guest role (omit to open unrecorded purge review)"]
-    user: Option<serenity::model::user::User>,
-) -> Result<(), Error> {
-    if let Some(target_user) = user {
-        purge_single_user(ctx, target_user).await
-    } else {
-        show_absen_audit(ctx).await
-    }
-}
-
-#[poise::command(slash_command, prefix_command, rename = "audit", category = "Admin")]
-pub async fn absen_manage_audit(ctx: Context<'_>) -> Result<(), Error> {
-    show_absen_audit(ctx).await
-}
-
 #[poise::command(slash_command, prefix_command, rename = "check", category = "Admin")]
-pub async fn absen_manage_check(ctx: Context<'_>) -> Result<(), Error> {
-    show_absen_audit(ctx).await
-}
-
-#[poise::command(slash_command, prefix_command, rename = "purge", category = "Admin")]
-pub async fn absen_manage_purge(
+pub async fn absen_manage_check(
     ctx: Context<'_>,
-    #[description = "Member to purge to Guest role (omit to open unrecorded purge review)"]
+    #[description = "Purge a specific member directly (leave empty to open unrecorded review panel)"]
     user: Option<serenity::model::user::User>,
 ) -> Result<(), Error> {
     if let Some(target_user) = user {
