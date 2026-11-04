@@ -641,13 +641,11 @@ pub async fn absen(
                 let r_name: String = row.get("roblox_name");
                 let r_user: Option<String> = row.try_get("roblox_username").unwrap_or(None);
                 let r_disp: Option<String> = row.try_get("roblox_display_name").unwrap_or(None);
-                let r_role: Option<String> = row.try_get("role_id").unwrap_or(None);
                 let r_status: String = row.try_get("status").unwrap_or_else(|_| "ACCEPTED".to_string());
                 let r_time: Option<chrono::NaiveDateTime> = row.try_get("timestamp").unwrap_or(None);
 
                 let display_val = r_disp.unwrap_or(r_name);
                 let username_val = r_user.unwrap_or_else(|| display_val.clone());
-                let role_val = r_role.map(|id| format!("<@&{}> (`{}`)", id, id)).unwrap_or_else(|| "None".to_string());
                 let time_val = r_time.map(|t| format!("<t:{}:F>", t.and_utc().timestamp())).unwrap_or_else(|| "Recorded".to_string());
 
                 let embed = serenity::builder::CreateEmbed::new()
@@ -657,7 +655,6 @@ pub async fn absen(
                     .field("Status", format!("`{}`", r_status), true)
                     .field("Discord Member", format!("<@{}> (`@{}`)", author_id, author_username), true)
                     .field("Discord ID", format!("`{}`", author_id), true)
-                    .field("Discord Role", role_val, false)
                     .field("Roblox Username", format!("`@{}`", username_val), true)
                     .field("Roblox Display Name", format!("`{}`", display_val), true)
                     .field("Recorded At", time_val, false)
@@ -934,7 +931,6 @@ pub async fn absen(
 
     // 8. Retrieve Discord Member and Role ID
     let mut primary_role_id: Option<String> = None;
-    let mut primary_role_name: Option<String> = None;
 
     if let Some(member) = ctx.author_member().await {
         if let Some(guild) = ctx.guild() {
@@ -944,18 +940,11 @@ pub async fn absen(
                     if highest_pos.map_or(true, |pos| r.position > pos) {
                         highest_pos = Some(r.position);
                         primary_role_id = Some(rid.to_string());
-                        primary_role_name = Some(r.name.clone());
                     }
                 }
             }
         }
     }
-
-    let role_display = match (&primary_role_id, &primary_role_name) {
-        (Some(id), Some(name)) => format!("<@&{}> (`{}` - {})", id, id, name),
-        (Some(id), None) => format!("<@&{}> (`{}`)", id, id),
-        _ => "None".to_string(),
-    };
 
     let clan_roles_str = member_data["roles"].as_array()
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>().join(", "))
@@ -1006,7 +995,6 @@ pub async fn absen(
         .field("Status", "`ACCEPTED`", true)
         .field("Discord Member", format!("<@{}> (`@{}`)", author_id, author_username), true)
         .field("Discord ID", format!("`{}`", author_id), true)
-        .field("Discord Role", role_display, false)
         .field("Roblox Username", format!("`@{}`", rbx_username), true)
         .field("Roblox Display Name", format!("`{}`", rbx_display_name), true)
         .field("Clan Role", format!("`{}`", clan_roles_str), true)

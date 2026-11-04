@@ -794,15 +794,13 @@ pub async fn show_absen_list(ctx: Context<'_>) -> Result<(), Error> {
                 let roblox_name: String = r.get("roblox_name");
                 let roblox_username: Option<String> = r.try_get("roblox_username").unwrap_or(None);
                 let roblox_display_name: Option<String> = r.try_get("roblox_display_name").unwrap_or(None);
-                let role_id: Option<String> = r.try_get("role_id").unwrap_or(None);
                 
                 let disp = roblox_display_name.unwrap_or(roblox_name);
                 let u_name = roblox_username.unwrap_or_else(|| disp.clone());
-                let role_str = role_id.map(|rid| format!(" | Role: <@&{}>", rid)).unwrap_or_default();
 
                 let line = format!(
-                    "{}. **{}** (`@{}`) - Discord: **{}** (`{}`){}\n",
-                    i + 1, disp, u_name, discord_username, discord_id, role_str
+                    "{}. **{}** (`@{}`) - Discord: **{}** (`{}`)\n",
+                    i + 1, disp, u_name, discord_username, discord_id
                 );
                 
                 // Keep it under embed limits
