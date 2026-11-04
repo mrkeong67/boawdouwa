@@ -502,34 +502,35 @@ pub async fn members(ctx: Context<'_>) -> Result<(), Error> {
 
     let members_arr = members_data.as_array().or_else(|| members_data["members"].as_array());
     if let Some(arr) = members_arr {
-        let mut embed = serenity::builder::CreateEmbed::new()
-            .title("👥 4FUN Clan Members")
-            .color(0xef4444)
-            .description(format!("Total Members: **{}**", arr.len()));
-
-        let mut current_field = String::new();
+        let mut desc = format!("Total Members: **{}**\n\n", arr.len());
 
         for member in arr {
             let name = member["name"].as_str().unwrap_or("Unknown");
             let username = member["username"].as_str().unwrap_or("Unknown");
             let discord_id = member["socials"]["discordId"].as_str().unwrap_or("");
             
-            let line = format!("• **{}** (`@{}`) - <@{}>\n", name, username, discord_id);
+            let line = if discord_id.is_empty() {
+                format!("• **{}** (`@{}`)\n", name, username)
+            } else {
+                format!("• **{}** (`@{}`) - <@{}>\n", name, username, discord_id)
+            };
             
-            if current_field.len() + line.len() > 1024 {
-                embed = embed.field("\u{200B}", current_field.clone(), false);
-                current_field = String::new();
+            if desc.len() + line.len() > 3950 {
+                desc.push_str("...and additional members.");
+                break;
             }
-            current_field.push_str(&line);
+            desc.push_str(&line);
         }
-        
-        if !current_field.is_empty() {
-            embed = embed.field("\u{200B}", current_field, false);
-        }
+
+        let embed = serenity::builder::CreateEmbed::new()
+            .title("4FUN Clan Members")
+            .color(0xef4444)
+            .description(desc)
+            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Website • https://www.4funclan.site/members"));
 
         ctx.send(poise::CreateReply::default().embed(embed)).await?;
     } else {
-        send_embed(ctx, "Error", "Data member tidak ditemukan.", 0xED4245).await?;
+        send_embed(ctx, "Error", "Member data not found.", 0xED4245).await?;
     }
     
     Ok(())
