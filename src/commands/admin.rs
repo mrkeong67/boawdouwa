@@ -905,7 +905,27 @@ fn build_audit_payload(
     refresh_btn_id: &str,
     cancel_btn_id: &str,
 ) -> (serenity::builder::CreateEmbed, Vec<serenity::builder::CreateActionRow>) {
-    let mut list_desc = String::new();
+    let mut desc = format!(
+        "The following **{}** member(s) hold the Member role (<@&{}>) without Veteran exemption (<@&{}>), and have **not** recorded their monthly attendance.\n\n\
+        **Audit Statistics:**\n\
+        • Attended Members: **{}**\n\
+        • Exempt Veterans: **{}**\n\
+        • Unrecorded Members: **{}**\n\n\
+        **Actions:**\n\
+        • Select a member from the **dropdown menu** below to purge **1-by-1**.\n\
+        • Click **Purge All to Guest** to demote all unrecorded members at once.\n\
+        *(Purging removes all roles, assigns Guest <@&{}>, and resets nicknames)*\n\n\
+        **Unrecorded Members List:**\n",
+        unrecorded_members.len(),
+        crate::types::ROLE_MEMBER_ID,
+        crate::types::ROLE_VETERAN_ID,
+        attended_count,
+        exempt_count,
+        unrecorded_members.len(),
+        crate::types::ROLE_GUEST_ID,
+    );
+
+    let mut truncated_count = 0;
     for (i, m) in unrecorded_members.iter().enumerate() {
         let nick_info = if let Some(ref nick) = m.nick {
             format!(" (Nick: `{}`)", nick)
@@ -913,25 +933,21 @@ fn build_audit_payload(
             String::new()
         };
         let line = format!("{}. <@{}> (`@{}`){}\n", i + 1, m.user.id, m.user.name, nick_info);
-        if list_desc.len() + line.len() > 3000 {
-            list_desc.push_str(&format!("...and {} more members.\n", unrecorded_members.len() - i));
+        if desc.len() + line.len() > 3800 {
+            truncated_count = unrecorded_members.len() - i;
             break;
         }
-        list_desc.push_str(&line);
+        desc.push_str(&line);
+    }
+
+    if truncated_count > 0 {
+        desc.push_str(&format!("\n*...and {} more members (use dropdown or purge all to process).*\n", truncated_count));
     }
 
     let embed = serenity::builder::CreateEmbed::new()
         .title("Attendance Audit - Unrecorded Members Review")
-        .description(format!(
-            "The following **{}** member(s) hold the Member role (<@&{}>) without Veteran exemption (<@&{}>), and have **not** recorded their monthly attendance.\n\n• Use the **dropdown menu** below to purge individual members **1-by-1**.\n• Click **Purge All to Guest** to demote all unrecorded members at once.\n\n*Purging removes all existing roles, assigns Guest (<@&{}>), and resets server display names to default.*",
-            unrecorded_members.len(),
-            crate::types::ROLE_MEMBER_ID,
-            crate::types::ROLE_VETERAN_ID,
-            crate::types::ROLE_GUEST_ID,
-        ))
+        .description(desc)
         .color(0xe67e22)
-        .field("Audit Stats", format!("• Attended Members: **{}**\n• Exempt Veterans: **{}**\n• Unrecorded Members: **{}**", attended_count, exempt_count, unrecorded_members.len()), false)
-        .field("Unrecorded Members List", list_desc, false)
         .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Monthly Audit"));
 
     let select_options: Vec<serenity::builder::CreateSelectMenuOption> = unrecorded_members
@@ -942,8 +958,8 @@ fn build_audit_payload(
             let label = format!("{}. {}", i + 1, m.user.name);
             let label_clean = if label.len() > 100 { &label[..100] } else { &label };
             let nick_str = m.nick.as_deref().unwrap_or("Default");
-            let desc = format!("Nick: {} | ID: {}", nick_str, m.user.id);
-            let desc_clean = if desc.len() > 100 { &desc[..100] } else { &desc };
+            let desc_opt = format!("Nick: {} | ID: {}", nick_str, m.user.id);
+            let desc_clean = if desc_opt.len() > 100 { &desc_opt[..100] } else { &desc_opt };
             serenity::builder::CreateSelectMenuOption::new(label_clean, m.user.id.to_string())
                 .description(desc_clean)
         })
