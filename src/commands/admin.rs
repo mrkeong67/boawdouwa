@@ -701,7 +701,7 @@ pub async fn autothread_list(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove", "absen_manage_audit"), rename = "absen_manage")]
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", subcommands("absen_manage_open", "absen_manage_close", "absen_manage_list", "absen_manage_clear", "absen_manage_setchannel", "absen_manage_remove", "absen_manage_audit", "absen_manage_check", "absen_manage_purge"), rename = "absen_manage")]
 pub async fn absen_manage(_ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
@@ -831,19 +831,12 @@ pub async fn absen_manage_list(ctx: Context<'_>) -> Result<(), Error> {
     show_absen_list(ctx).await
 }
 
-pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.defer().await?;
-
-    let guild_id = match ctx.guild_id() {
-        Some(id) => id,
-        None => {
-            send_embed(ctx, "Error", "This command can only be used within a server.", 0xED4245).await?;
-            return Ok(());
-        }
-    };
+async fn fetch_audit_data(
+    ctx: Context<'_>,
+    guild_id: serenity::model::id::GuildId,
+) -> Result<(Vec<serenity::model::guild::Member>, usize, usize), Error> {
     let db_pool = &ctx.data().db_pool;
 
-    // 1. Fetch recorded member IDs from khivella_absen_records
     let rows = sqlx::query("SELECT discord_id FROM khivella_absen_records WHERE guild_id = $1")
         .bind(guild_id.to_string())
         .fetch_all(db_pool)
@@ -856,7 +849,6 @@ pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
         recorded_ids.insert(did);
     }
 
-    // 2. Fetch all guild members
     let mut all_members = Vec::new();
     let mut after: Option<u64> = None;
     loop {
@@ -874,10 +866,9 @@ pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
         }
     }
 
-    // 3. Classify members based on Member & Veteran roles
     let mut unrecorded_members = Vec::new();
-    let mut attended_members = Vec::new();
-    let mut exempt_veterans = Vec::new();
+    let mut attended_count = 0;
+    let mut exempt_count = 0;
 
     for m in all_members {
         if m.user.bot {
@@ -891,34 +882,29 @@ pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
         }
 
         if has_veteran {
-            // Has Member role + Veteran role: completely exempt from attendance & role removal
-            exempt_veterans.push(m);
+            exempt_count += 1;
             continue;
         }
 
-        // Non-veteran with Member role: check attendance
         if recorded_ids.contains(&m.user.id.to_string()) {
-            attended_members.push(m);
+            attended_count += 1;
         } else {
             unrecorded_members.push(m);
         }
     }
 
-    if unrecorded_members.is_empty() {
-        let embed = serenity::builder::CreateEmbed::new()
-            .title("Attendance Audit - All Clear")
-            .description("All clan members holding the Member role have recorded attendance, or hold Veteran exemption.")
-            .color(0x2ecc71)
-            .field("Attended Members", format!("{} members", attended_members.len()), true)
-            .field("Exempt Veterans", format!("{} members", exempt_veterans.len()), true)
-            .field("Unrecorded Members", "0 members", true)
-            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance Audit"));
+    Ok((unrecorded_members, attended_count, exempt_count))
+}
 
-        ctx.send(poise::CreateReply::default().embed(embed)).await?;
-        return Ok(());
-    }
-
-    // Format list of unrecorded members
+fn build_audit_payload(
+    unrecorded_members: &[serenity::model::guild::Member],
+    attended_count: usize,
+    exempt_count: usize,
+    select_menu_id: &str,
+    demote_btn_id: &str,
+    refresh_btn_id: &str,
+    cancel_btn_id: &str,
+) -> (serenity::builder::CreateEmbed, Vec<serenity::builder::CreateActionRow>) {
     let mut list_desc = String::new();
     for (i, m) in unrecorded_members.iter().enumerate() {
         let nick_info = if let Some(ref nick) = m.nick {
@@ -928,118 +914,369 @@ pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
         };
         let line = format!("{}. <@{}> (`@{}`){}\n", i + 1, m.user.id, m.user.name, nick_info);
         if list_desc.len() + line.len() > 3000 {
-            list_desc.push_str(&format!("...and {} more members.", unrecorded_members.len() - i));
+            list_desc.push_str(&format!("...and {} more members.\n", unrecorded_members.len() - i));
             break;
         }
         list_desc.push_str(&line);
     }
 
-    let demote_btn_id = format!("absen_demote_{}", ctx.id());
-    let cancel_btn_id = format!("absen_cancel_{}", ctx.id());
-
-    let demote_button = serenity::builder::CreateButton::new(&demote_btn_id)
-        .label(format!("Demote All to Guest ({})", unrecorded_members.len()))
-        .style(serenity::all::ButtonStyle::Danger);
-
-    let cancel_button = serenity::builder::CreateButton::new(&cancel_btn_id)
-        .label("Cancel")
-        .style(serenity::all::ButtonStyle::Secondary);
-
-    let row = serenity::builder::CreateActionRow::Buttons(vec![demote_button.clone(), cancel_button.clone()]);
-
     let embed = serenity::builder::CreateEmbed::new()
         .title("Attendance Audit - Unrecorded Members Review")
         .description(format!(
-            "The following **{}** member(s) hold the Member role (<@&{}>) without Veteran exemption (<@&{}>), and have **not** recorded their monthly attendance.\n\nClick **Demote All to Guest** below to remove all their existing roles, grant the Guest role (<@&{}>), and reset their server display names.",
+            "The following **{}** member(s) hold the Member role (<@&{}>) without Veteran exemption (<@&{}>), and have **not** recorded their monthly attendance.\n\n• Use the **dropdown menu** below to purge individual members **1-by-1**.\n• Click **Purge All to Guest** to demote all unrecorded members at once.\n\n*Purging removes all existing roles, assigns Guest (<@&{}>), and resets server display names to default.*",
             unrecorded_members.len(),
             crate::types::ROLE_MEMBER_ID,
             crate::types::ROLE_VETERAN_ID,
             crate::types::ROLE_GUEST_ID,
         ))
         .color(0xe67e22)
-        .field("Audit Stats", format!("• Attended Members: **{}**\n• Exempt Veterans: **{}**\n• Unrecorded Members: **{}**", attended_members.len(), exempt_veterans.len(), unrecorded_members.len()), false)
+        .field("Audit Stats", format!("• Attended Members: **{}**\n• Exempt Veterans: **{}**\n• Unrecorded Members: **{}**", attended_count, exempt_count, unrecorded_members.len()), false)
         .field("Unrecorded Members List", list_desc, false)
-        .footer(serenity::builder::CreateEmbedFooter::new("Clicking Demote will strip all current roles and assign the Guest role."));
+        .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System • Monthly Audit"));
 
-    let reply = ctx.send(poise::CreateReply::default().embed(embed).components(vec![row])).await?;
-    let msg = reply.message().await?;
+    let select_options: Vec<serenity::builder::CreateSelectMenuOption> = unrecorded_members
+        .iter()
+        .take(25)
+        .enumerate()
+        .map(|(i, m)| {
+            let label = format!("{}. {}", i + 1, m.user.name);
+            let label_clean = if label.len() > 100 { &label[..100] } else { &label };
+            let nick_str = m.nick.as_deref().unwrap_or("Default");
+            let desc = format!("Nick: {} | ID: {}", nick_str, m.user.id);
+            let desc_clean = if desc.len() > 100 { &desc[..100] } else { &desc };
+            serenity::builder::CreateSelectMenuOption::new(label_clean, m.user.id.to_string())
+                .description(desc_clean)
+        })
+        .collect();
 
-    let interaction = msg
-        .await_component_interaction(ctx)
-        .timeout(std::time::Duration::from_secs(120))
-        .await;
+    let mut rows = Vec::new();
+    if !select_options.is_empty() {
+        let select_menu = serenity::builder::CreateSelectMenu::new(
+            select_menu_id,
+            serenity::builder::CreateSelectMenuKind::String { options: select_options },
+        )
+        .placeholder(format!("Select a member to purge 1-by-1 (Showing 1-{} of {})...", unrecorded_members.len().min(25), unrecorded_members.len()));
 
-    let interaction = match interaction {
-        Some(i) => i,
+        rows.push(serenity::builder::CreateActionRow::SelectMenu(select_menu));
+    }
+
+    let demote_button = serenity::builder::CreateButton::new(demote_btn_id)
+        .label(format!("Purge All to Guest ({})", unrecorded_members.len()))
+        .style(serenity::all::ButtonStyle::Danger);
+
+    let refresh_button = serenity::builder::CreateButton::new(refresh_btn_id)
+        .label("Refresh")
+        .style(serenity::all::ButtonStyle::Secondary);
+
+    let cancel_button = serenity::builder::CreateButton::new(cancel_btn_id)
+        .label("Cancel")
+        .style(serenity::all::ButtonStyle::Secondary);
+
+    rows.push(serenity::builder::CreateActionRow::Buttons(vec![
+        demote_button,
+        refresh_button,
+        cancel_button,
+    ]));
+
+    (embed, rows)
+}
+
+pub async fn purge_single_user(ctx: Context<'_>, target_user: serenity::model::user::User) -> Result<(), Error> {
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id,
         None => {
-            let disabled_row = serenity::builder::CreateActionRow::Buttons(vec![
-                demote_button.disabled(true),
-                cancel_button.disabled(true),
-            ]);
-            reply.edit(ctx, poise::CreateReply::default().components(vec![disabled_row])).await?;
+            send_embed(ctx, "Error", "This command can only be used within a server.", 0xED4245).await?;
+            return Ok(());
+        }
+    };
+    let db_pool = &ctx.data().db_pool;
+
+    let member = match guild_id.member(ctx.http(), target_user.id).await {
+        Ok(m) => m,
+        Err(_) => {
+            send_embed(ctx, "Member Not Found", &format!("Could not find <@{}> in this server.", target_user.id), 0xED4245).await?;
             return Ok(());
         }
     };
 
-    if interaction.data.custom_id == cancel_btn_id {
-        let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Acknowledge).await;
-        let cancel_embed = serenity::builder::CreateEmbed::new()
-            .title("Attendance Audit - Cancelled")
-            .description(format!("Action was cancelled by <@{}>. No roles or nicknames were modified.", interaction.user.id))
-            .color(0x7f8c8d);
-        reply.edit(ctx, poise::CreateReply::default().embed(cancel_embed).components(vec![])).await?;
+    // Check if target has Veteran role (exempt from attendance purge!)
+    if member.roles.iter().any(|r| r.get() == crate::types::ROLE_VETERAN_ID) {
+        send_embed(
+            ctx,
+            "Protected Member",
+            &format!("Cannot purge <@{}>: This member holds the Veteran role (<@&{}>) and is exempt from attendance requirements.", target_user.id, crate::types::ROLE_VETERAN_ID),
+            0xED4245
+        ).await?;
         return Ok(());
     }
 
-    if interaction.data.custom_id == demote_btn_id {
-        let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Acknowledge).await;
-        
-        let progress_embed = serenity::builder::CreateEmbed::new()
-            .title("Attendance Audit - Processing Demotions...")
-            .description(format!("Demoting {} member(s), assigning Guest role, and resetting nicknames. Please wait...", unrecorded_members.len()))
-            .color(0x3498db);
-        reply.edit(ctx, poise::CreateReply::default().embed(progress_embed).components(vec![])).await?;
+    let guest_role_id = serenity::model::id::RoleId::new(crate::types::ROLE_GUEST_ID);
+    let edit_builder = serenity::builder::EditMember::new()
+        .nickname("")
+        .roles(vec![guest_role_id]);
 
-        let mut success_count = 0;
-        let mut fail_count = 0;
-        let guest_role_id = serenity::model::id::RoleId::new(crate::types::ROLE_GUEST_ID);
+    match guild_id.edit_member(ctx.http(), target_user.id, edit_builder).await {
+        Ok(_) => {
+            let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_purge_single', $1, $2, $3)")
+                .bind(ctx.author().id.to_string())
+                .bind(&ctx.author().name)
+                .bind(format!("Purged user {} ({}) to Guest role and reset nickname", target_user.name, target_user.id))
+                .execute(db_pool)
+                .await;
 
-        for m in &unrecorded_members {
-            // Edit member: reset nickname to default and replace all roles with Guest role
-            let edit_builder = serenity::builder::EditMember::new()
-                .nickname("")
-                .roles(vec![guest_role_id]);
+            let embed = serenity::builder::CreateEmbed::new()
+                .title("Member Purged to Guest")
+                .description(format!("Successfully demoted <@{}> to Guest role and reset their server display name.", target_user.id))
+                .color(0x2ecc71)
+                .field("Demoted Member", format!("<@{}> (`@{}`)", target_user.id, target_user.name), true)
+                .field("Assigned Role", format!("<@&{}>", crate::types::ROLE_GUEST_ID), true)
+                .field("Nickname", "Reset to Discord default", false)
+                .field("Action By", format!("<@{}>", ctx.author().id), false)
+                .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance System"));
 
-            match guild_id.edit_member(ctx.http(), m.user.id, edit_builder).await {
-                Ok(_) => success_count += 1,
-                Err(e) => {
-                    tracing::warn!("Failed to demote member {}: {:?}", m.user.id, e);
-                    fail_count += 1;
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            ctx.send(poise::CreateReply::default().embed(embed)).await?;
         }
+        Err(e) => {
+            send_embed(ctx, "Demotion Failed", &format!("Failed to demote <@{}>: {}\nMake sure the bot's role is positioned higher in Server Settings > Roles.", target_user.id, e), 0xED4245).await?;
+        }
+    }
 
-        let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_audit_demote', $1, $2, $3)")
-            .bind(interaction.user.id.to_string())
-            .bind(&interaction.user.name)
-            .bind(format!("Demoted {} unrecorded members to Guest (failed: {})", success_count, fail_count))
-            .execute(db_pool)
-            .await;
+    Ok(())
+}
 
-        let finished_embed = serenity::builder::CreateEmbed::new()
-            .title("Attendance Audit - Demotion Completed")
-            .description("Role removal and demotion process has finished for all unrecorded members.")
+pub async fn show_absen_audit(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer().await?;
+
+    let guild_id = match ctx.guild_id() {
+        Some(id) => id,
+        None => {
+            send_embed(ctx, "Error", "This command can only be used within a server.", 0xED4245).await?;
+            return Ok(());
+        }
+    };
+    let db_pool = &ctx.data().db_pool;
+
+    let (mut unrecorded_members, mut attended_count, mut exempt_count) = fetch_audit_data(ctx, guild_id).await?;
+
+    if unrecorded_members.is_empty() {
+        let embed = serenity::builder::CreateEmbed::new()
+            .title("Attendance Audit - All Clear")
+            .description("All clan members holding the Member role have recorded attendance, or hold Veteran exemption.")
             .color(0x2ecc71)
-            .field("Successfully Demoted", format!("{} members", success_count), true)
-            .field("Failed / Hierarchy Shield", format!("{} members", fail_count), true)
-            .field("Assigned Role", format!("<@&{}>", crate::types::ROLE_GUEST_ID), false)
-            .field("Nicknames", "Reset to Discord default", false)
-            .field("Exempt Veterans Preserved", format!("{} members", exempt_veterans.len()), false)
+            .field("Attended Members", format!("{} members", attended_count), true)
+            .field("Exempt Veterans", format!("{} members", exempt_count), true)
+            .field("Unrecorded Members", "0 members", true)
             .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance Audit"));
 
-        reply.edit(ctx, poise::CreateReply::default().embed(finished_embed).components(vec![])).await?;
+        ctx.send(poise::CreateReply::default().embed(embed)).await?;
+        return Ok(());
     }
+
+    let demote_btn_id = format!("absen_demote_{}", ctx.id());
+    let refresh_btn_id = format!("absen_refresh_{}", ctx.id());
+    let cancel_btn_id = format!("absen_cancel_{}", ctx.id());
+    let select_menu_id = format!("absen_purge_sel_{}", ctx.id());
+
+    let (embed, components) = build_audit_payload(
+        &unrecorded_members,
+        attended_count,
+        exempt_count,
+        &select_menu_id,
+        &demote_btn_id,
+        &refresh_btn_id,
+        &cancel_btn_id,
+    );
+
+    let reply = ctx.send(poise::CreateReply::default().embed(embed).components(components)).await?;
+    let msg = reply.message().await?;
+
+    use serenity::futures::StreamExt;
+    let mut collector = msg.await_component_interactions(ctx.serenity_context())
+        .timeout(std::time::Duration::from_secs(300))
+        .stream();
+
+    while let Some(interaction) = collector.next().await {
+        // Enforce staff permissions on interactions
+        if interaction.user.id != ctx.author().id {
+            let is_staff = crate::utils::checks::is_staff(ctx).await.unwrap_or(false);
+            if !is_staff {
+                let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Message(
+                    serenity::builder::CreateInteractionResponseMessage::new()
+                        .content("Only staff members can use these attendance audit controls.")
+                        .ephemeral(true)
+                )).await;
+                continue;
+            }
+        }
+
+        let _ = interaction.create_response(ctx, serenity::builder::CreateInteractionResponse::Acknowledge).await;
+
+        if interaction.data.custom_id == cancel_btn_id {
+            let cancel_embed = serenity::builder::CreateEmbed::new()
+                .title("Attendance Audit - Cancelled")
+                .description(format!("Audit session closed by <@{}>. No further modifications were made.", interaction.user.id))
+                .color(0x7f8c8d);
+            let _ = reply.edit(ctx, poise::CreateReply::default().embed(cancel_embed).components(vec![])).await;
+            return Ok(());
+        }
+
+        if interaction.data.custom_id == refresh_btn_id {
+            if let Ok((new_unrecorded, new_attended, new_exempt)) = fetch_audit_data(ctx, guild_id).await {
+                unrecorded_members = new_unrecorded;
+                attended_count = new_attended;
+                exempt_count = new_exempt;
+
+                if unrecorded_members.is_empty() {
+                    let clear_embed = serenity::builder::CreateEmbed::new()
+                        .title("Attendance Audit - All Clear")
+                        .description("All clan members holding the Member role have recorded attendance, or hold Veteran exemption.")
+                        .color(0x2ecc71)
+                        .field("Attended Members", format!("{} members", attended_count), true)
+                        .field("Exempt Veterans", format!("{} members", exempt_count), true)
+                        .field("Unrecorded Members", "0 members", true)
+                        .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance Audit"));
+
+                    let _ = reply.edit(ctx, poise::CreateReply::default().embed(clear_embed).components(vec![])).await;
+                    return Ok(());
+                }
+
+                let (new_embed, new_components) = build_audit_payload(
+                    &unrecorded_members,
+                    attended_count,
+                    exempt_count,
+                    &select_menu_id,
+                    &demote_btn_id,
+                    &refresh_btn_id,
+                    &cancel_btn_id,
+                );
+                let _ = reply.edit(ctx, poise::CreateReply::default().embed(new_embed).components(new_components)).await;
+            }
+            continue;
+        }
+
+        if interaction.data.custom_id == demote_btn_id {
+            let progress_embed = serenity::builder::CreateEmbed::new()
+                .title("Attendance Audit - Processing Bulk Demotions...")
+                .description(format!("Demoting {} unrecorded member(s), assigning Guest role, and resetting nicknames. Please wait...", unrecorded_members.len()))
+                .color(0x3498db);
+            let _ = reply.edit(ctx, poise::CreateReply::default().embed(progress_embed).components(vec![])).await;
+
+            let mut success_count = 0;
+            let mut fail_count = 0;
+            let guest_role_id = serenity::model::id::RoleId::new(crate::types::ROLE_GUEST_ID);
+
+            for m in &unrecorded_members {
+                let edit_builder = serenity::builder::EditMember::new()
+                    .nickname("")
+                    .roles(vec![guest_role_id]);
+
+                match guild_id.edit_member(ctx.http(), m.user.id, edit_builder).await {
+                    Ok(_) => success_count += 1,
+                    Err(e) => {
+                        tracing::warn!("Failed to demote member {}: {:?}", m.user.id, e);
+                        fail_count += 1;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+
+            let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_audit_demote_all', $1, $2, $3)")
+                .bind(interaction.user.id.to_string())
+                .bind(&interaction.user.name)
+                .bind(format!("Demoted {} unrecorded members to Guest (failed: {})", success_count, fail_count))
+                .execute(db_pool)
+                .await;
+
+            let finished_embed = serenity::builder::CreateEmbed::new()
+                .title("Attendance Audit - Demotion Completed")
+                .description("Role removal and demotion process has finished for all unrecorded members.")
+                .color(0x2ecc71)
+                .field("Successfully Demoted", format!("{} members", success_count), true)
+                .field("Failed / Hierarchy Shield", format!("{} members", fail_count), true)
+                .field("Assigned Role", format!("<@&{}>", crate::types::ROLE_GUEST_ID), false)
+                .field("Nicknames", "Reset to Discord default", false)
+                .field("Exempt Veterans Preserved", format!("{} members", exempt_count), false)
+                .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance Audit"));
+
+            let _ = reply.edit(ctx, poise::CreateReply::default().embed(finished_embed).components(vec![])).await;
+            return Ok(());
+        }
+
+        if interaction.data.custom_id == select_menu_id {
+            let selected_uid_str = match &interaction.data.kind {
+                serenity::model::application::ComponentInteractionDataKind::StringSelect { values } => values.first().cloned(),
+                _ => None,
+            };
+
+            if let Some(uid_str) = selected_uid_str {
+                if let Ok(uid_num) = uid_str.parse::<u64>() {
+                    let target_id = serenity::model::id::UserId::new(uid_num);
+                    let guest_role_id = serenity::model::id::RoleId::new(crate::types::ROLE_GUEST_ID);
+                    let edit_builder = serenity::builder::EditMember::new()
+                        .nickname("")
+                        .roles(vec![guest_role_id]);
+
+                    let _ = guild_id.edit_member(ctx.http(), target_id, edit_builder).await;
+
+                    let _ = sqlx::query("INSERT INTO khivella_audit_logs (event_type, user_id, username, details) VALUES ('absen_audit_demote_single', $1, $2, $3)")
+                        .bind(interaction.user.id.to_string())
+                        .bind(&interaction.user.name)
+                        .bind(format!("1-by-1 Purge: Demoted user <@{}> to Guest role and reset nickname", uid_num))
+                        .execute(db_pool)
+                        .await;
+
+                    unrecorded_members.retain(|m| m.user.id.get() != uid_num);
+
+                    if unrecorded_members.is_empty() {
+                        let clear_embed = serenity::builder::CreateEmbed::new()
+                            .title("Attendance Audit - All Clear")
+                            .description("All unrecorded members have been purged to the Guest role.")
+                            .color(0x2ecc71)
+                            .field("Attended Members", format!("{} members", attended_count), true)
+                            .field("Exempt Veterans", format!("{} members", exempt_count), true)
+                            .field("Unrecorded Members", "0 members", true)
+                            .footer(serenity::builder::CreateEmbedFooter::new("4FUN Clan Attendance Audit"));
+
+                        let _ = reply.edit(ctx, poise::CreateReply::default().embed(clear_embed).components(vec![])).await;
+                        return Ok(());
+                    } else {
+                        let (new_embed, new_components) = build_audit_payload(
+                            &unrecorded_members,
+                            attended_count,
+                            exempt_count,
+                            &select_menu_id,
+                            &demote_btn_id,
+                            &refresh_btn_id,
+                            &cancel_btn_id,
+                        );
+                        let _ = reply.edit(ctx, poise::CreateReply::default().embed(new_embed).components(new_components)).await;
+                    }
+                }
+            }
+        }
+    }
+
+    // When interaction collector times out after 5 minutes
+    let disabled_demote = serenity::builder::CreateButton::new(&demote_btn_id)
+        .label(format!("Purge All to Guest ({})", unrecorded_members.len()))
+        .style(serenity::all::ButtonStyle::Danger)
+        .disabled(true);
+    let disabled_refresh = serenity::builder::CreateButton::new(&refresh_btn_id)
+        .label("Refresh")
+        .style(serenity::all::ButtonStyle::Secondary)
+        .disabled(true);
+    let disabled_cancel = serenity::builder::CreateButton::new(&cancel_btn_id)
+        .label("Cancel")
+        .style(serenity::all::ButtonStyle::Secondary)
+        .disabled(true);
+
+    let disabled_row = serenity::builder::CreateActionRow::Buttons(vec![
+        disabled_demote,
+        disabled_refresh,
+        disabled_cancel,
+    ]);
+
+    let _ = reply.edit(ctx, poise::CreateReply::default().components(vec![disabled_row])).await;
 
     Ok(())
 }
@@ -1049,9 +1286,45 @@ pub async fn absenaudit(ctx: Context<'_>) -> Result<(), Error> {
     show_absen_audit(ctx).await
 }
 
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absencheck", aliases("absen_check"))]
+pub async fn absencheck(ctx: Context<'_>) -> Result<(), Error> {
+    show_absen_audit(ctx).await
+}
+
+#[poise::command(slash_command, prefix_command, default_member_permissions = "ADMINISTRATOR", check = "crate::utils::checks::is_staff", category = "Admin", rename = "absenpurge", aliases("absen_purge"))]
+pub async fn absenpurge(
+    ctx: Context<'_>,
+    #[description = "Member to purge to Guest role (omit to open unrecorded purge review)"]
+    user: Option<serenity::model::user::User>,
+) -> Result<(), Error> {
+    if let Some(target_user) = user {
+        purge_single_user(ctx, target_user).await
+    } else {
+        show_absen_audit(ctx).await
+    }
+}
+
 #[poise::command(slash_command, prefix_command, rename = "audit", category = "Admin")]
 pub async fn absen_manage_audit(ctx: Context<'_>) -> Result<(), Error> {
     show_absen_audit(ctx).await
+}
+
+#[poise::command(slash_command, prefix_command, rename = "check", category = "Admin")]
+pub async fn absen_manage_check(ctx: Context<'_>) -> Result<(), Error> {
+    show_absen_audit(ctx).await
+}
+
+#[poise::command(slash_command, prefix_command, rename = "purge", category = "Admin")]
+pub async fn absen_manage_purge(
+    ctx: Context<'_>,
+    #[description = "Member to purge to Guest role (omit to open unrecorded purge review)"]
+    user: Option<serenity::model::user::User>,
+) -> Result<(), Error> {
+    if let Some(target_user) = user {
+        purge_single_user(ctx, target_user).await
+    } else {
+        show_absen_audit(ctx).await
+    }
 }
 
 #[poise::command(slash_command, prefix_command, rename = "clear", category = "Admin")]

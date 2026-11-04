@@ -679,14 +679,26 @@ pub async fn absen(
 
     let clean_input = raw_username.trim().trim_start_matches('@');
 
-    // Shortcuts for staff/admin: ffabsen list / ffabsen audit
+    // Shortcuts for staff/admin: ffabsen list / ffabsen check / ffabsen audit / ffabsen purge
     if clean_input.eq_ignore_ascii_case("list") || clean_input.eq_ignore_ascii_case("rekap") {
         if crate::utils::checks::is_staff(ctx).await.unwrap_or(false) {
             return crate::commands::admin::show_absen_list(ctx).await;
         }
     }
-    if clean_input.eq_ignore_ascii_case("audit") || clean_input.eq_ignore_ascii_case("review") {
+    if clean_input.eq_ignore_ascii_case("check") || clean_input.eq_ignore_ascii_case("audit") || clean_input.eq_ignore_ascii_case("review") {
         if crate::utils::checks::is_staff(ctx).await.unwrap_or(false) {
+            return crate::commands::admin::show_absen_audit(ctx).await;
+        }
+    }
+    if clean_input.to_lowercase().starts_with("purge") {
+        if crate::utils::checks::is_staff(ctx).await.unwrap_or(false) {
+            let remainder = clean_input["purge".len()..].trim();
+            let user_id_str = remainder.trim_start_matches("<@").trim_start_matches('!').trim_end_matches('>');
+            if let Ok(uid) = user_id_str.parse::<u64>() {
+                if let Ok(u) = serenity::model::id::UserId::new(uid).to_user(ctx.http()).await {
+                    return crate::commands::admin::purge_single_user(ctx, u).await;
+                }
+            }
             return crate::commands::admin::show_absen_audit(ctx).await;
         }
     }
