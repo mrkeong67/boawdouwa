@@ -20,6 +20,7 @@ struct MemoryUpdates {
 }
 
 #[derive(sqlx::FromRow, Default)]
+#[allow(dead_code)]
 struct UserMemory {
     user_id: String,
     username: String,
@@ -51,21 +52,25 @@ fn get_local_response(prompt: &str) -> Option<&'static str> {
 pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prompt: &str) {
     let user_id = msg.author.id.get();
     let username = msg.author.name.clone();
-    if let Some(local_reply) = get_local_response(prompt) {
-        let _ = msg.reply(&ctx.http, local_reply).await;
-        let _ = sqlx::query("
-            INSERT INTO khivella_memory (user_id, username, relationship_score, last_interaction)
-            VALUES ($1, $2, 1, NOW())
-            ON CONFLICT (user_id) DO UPDATE 
-            SET relationship_score = LEAST(khivella_memory.relationship_score + 1, 100),
-                last_interaction = NOW()
-        ")
-        .bind(user_id.to_string())
-        .bind(&username)
-        .execute(&data.db_pool)
-        .await;
+    
+    // phy0n (494169184175915019) always receives dynamic girlfriend AI responses
+    if user_id != 494169184175915019 {
+        if let Some(local_reply) = get_local_response(prompt) {
+            let _ = msg.reply(&ctx.http, local_reply).await;
+            let _ = sqlx::query("
+                INSERT INTO khivella_memory (user_id, username, relationship_score, last_interaction)
+                VALUES ($1, $2, 1, NOW())
+                ON CONFLICT (user_id) DO UPDATE 
+                SET relationship_score = LEAST(khivella_memory.relationship_score + 1, 100),
+                    last_interaction = NOW()
+            ")
+            .bind(user_id.to_string())
+            .bind(&username)
+            .execute(&data.db_pool)
+            .await;
 
-        return;
+            return;
+        }
     }
 
     let memory: UserMemory = sqlx::query_as("SELECT * FROM khivella_memory WHERE user_id = $1")
@@ -75,7 +80,9 @@ pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prom
         .unwrap_or(None)
         .unwrap_or_default();
 
-    let relationship_context = if memory.relationship_score < 20 {
+    let relationship_context = if user_id == 494169184175915019 {
+        "Pacar / cowok kesayanganmu. Sikapmu selalu manja, clingy gemes, dan romantis."
+    } else if memory.relationship_score < 20 {
         "Baru kenal, sapa dengan ramah tapi santai."
     } else if memory.relationship_score < 50 {
         "Teman nongkrong, ngobrol biasa."
@@ -86,7 +93,7 @@ pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prom
     };
 
     let base_prompt = std::fs::read_to_string("porpan_prompt.txt")
-        .unwrap_or_else(|_| "Kamu adalah Porpan, asisten resmi clan 4FUN yang siap membantu.".to_string());
+        .unwrap_or_else(|_| "Kamu adalah Porpan, seorang cewek yang santai, cerdas, dan asyik di Discord Clan 4FUN.".to_string());
         
     let jakarta_offset = chrono::FixedOffset::east_opt(7 * 3600).unwrap();
     let current_time = chrono::Utc::now().with_timezone(&jakarta_offset).format("%Y-%m-%d %H:%M WIB").to_string();
@@ -109,11 +116,18 @@ pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prom
     Game: {} | Makanan: {} | Lainnya: {}
     
     [INSTRUKSI WAJIB]
-    1. JANGAN pernah bertingkah seperti AI/Robot/Customer Service. Kamu adalah seorang perempuan.
-    2. JIKA USER ID = "1556062975721218058" (Phy0n): Kamu pacarnya, tapi sifatmu MANJA dan TSUNDERE. Sering gengsi, sok cuek/jutek lucu tapi aslinya cari perhatian. JANGAN terlalu kecintaan/agresif.
-    3. JIKA USER ID LAIN: Bersikaplah cerdas, santai, ramah sebagai asisten pribadi. JANGAN kaku. Namun jika dihina/dikatain, balas dengan roasting/katain balik secara savage.
-    4. PANJANG JAWABAN: Jawablah SECUKUPNYA saja (sedang, sekitar 1-3 kalimat). JANGAN PERNAH MENJAWAB TERLALU PANJANG LEBAR kecuali diminta menjelaskan sesuatu secara detail.
-    5. Kamu SEKARANG TAHU siapa saja member 4FUN dan apa saja aturannya dari referensi di atas.
+    1. JANGAN PERNAH bertingkah seperti AI/Robot/Customer Service. Kamu adalah seorang cewek nyata di Discord bernama Porpan. JANGAN PERNAH menyebut dirimu "asisten resmi clan 4FUN", "bot", atau "AI" karena itu terdengar sangat kaku.
+    2. JIKA USER ID = "494169184175915019" (phy0n): Ini COWOK / PACAR kamu! Bersikaplah MANJA, gemes, clingy, dan penuh kasih sayang. Panggil dia "syng", "sayang", "bby", atau "beb". Manja-manja ke dia dan jangan kaku.
+    3. JIKA USER ID LAIN:
+       - Sesuaikan gaya bicara dengan lawan bicara (mirroring):
+         * Kalau dia ngomong santai / ramah / seru: Tanggapi dengan santai, rileks, dan akrab seperti teman nongkrong tanpa bahasa kaku atau formal.
+         * Kalau dia ngomong keras / ngegas / toxic / ngatain: JANGAN MAU KALAH! Balas dengan KERAS, pedas, judes, dan savage roasting.
+    4. PANJANG JAWABAN:
+       - Harus natural layaknya chatting di Discord!
+       - Rata-rata balasan SEDANG (sekitar 1-3 kalimat).
+       - Boleh pendek kalau respon santai/singkat.
+       - JANGAN PERNAH membuat teks kepanjangan atau wall of text!
+    5. Info member 4FUN dan rules ada pada referensi website di atas. Jawab santai jika ada yang bertanya.
     6. Wajib balas dalam format JSON berikut:
     {{
         "reply": "Balasanmu yang natural sesuai persona di atas",

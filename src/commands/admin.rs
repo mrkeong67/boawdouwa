@@ -489,7 +489,8 @@ pub async fn restart(ctx: Context<'_>) -> Result<(), Error> {
 
 #[derive(serde::Serialize)]
 struct RobloxUserRequest {
-    userIds: Vec<u64>,
+    #[serde(rename = "userIds")]
+    user_ids: Vec<u64>,
     #[serde(rename = "excludeBannedUsers")]
     exclude_banned_users: bool,
 }
@@ -541,7 +542,7 @@ pub async fn checknames(ctx: Context<'_>) -> Result<(), Error> {
     
     for chunk in user_ids.chunks(100) {
         let req_body = RobloxUserRequest {
-            userIds: chunk.to_vec(),
+            user_ids: chunk.to_vec(),
             exclude_banned_users: false,
         };
         

@@ -4,19 +4,53 @@ use songbird::input::{Compose, YoutubeDl};
 use serenity::all::Mentionable;
 
 #[poise::command(slash_command, prefix_command, guild_only, category = "Music")]
-pub async fn join(ctx: Context<'_>) -> Result<(), Error> {
+pub async fn join(
+    ctx: Context<'_>,
+    #[description = "Voice channel to join (mention or channel ID)"]
+    channel: Option<serenity::all::ChannelId>,
+) -> Result<(), Error> {
     let guild_id = ctx.guild_id().unwrap();
-    let channel_id = {
-        let guild = ctx.guild().unwrap();
-        guild.voice_states.get(&ctx.author().id)
-            .and_then(|voice_state| voice_state.channel_id)
-    };
 
-    let connect_to = match channel_id {
-        Some(channel) => channel,
+    let connect_to = match channel {
+        Some(target_channel) => {
+            let target_channel_type = {
+                let guild = ctx.guild();
+                guild.and_then(|g| g.channels.get(&target_channel).map(|c| c.kind))
+            };
+
+            let kind = match target_channel_type {
+                Some(k) => Some(k),
+                None => {
+                    target_channel.to_channel(ctx.http()).await.ok().and_then(|c| match c {
+                        serenity::all::Channel::Guild(gc) => Some(gc.kind),
+                        _ => None,
+                    })
+                }
+            };
+
+            if let Some(k) = kind {
+                if k != serenity::all::ChannelType::Voice && k != serenity::all::ChannelType::Stage {
+                    send_embed(ctx, "Error", &format!("{} is not a voice or stage channel.", target_channel.mention()), 0xED4245).await?;
+                    return Ok(());
+                }
+            }
+
+            target_channel
+        }
         None => {
-            send_embed(ctx, "Error", "You need to join a voice channel first.", 0xED4245).await?;
-            return Ok(());
+            let user_channel = {
+                let guild = ctx.guild().unwrap();
+                guild.voice_states.get(&ctx.author().id)
+                    .and_then(|voice_state| voice_state.channel_id)
+            };
+
+            match user_channel {
+                Some(ch) => ch,
+                None => {
+                    send_embed(ctx, "Error", "You need to join a voice channel first, or specify a channel: `ffjoin <#channel>`.", 0xED4245).await?;
+                    return Ok(());
+                }
+            }
         }
     };
 
