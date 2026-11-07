@@ -189,8 +189,19 @@ pub async fn event_handler(
                     return Ok(());
                 }
 
+                // Handle stickers & attachments when prompt is empty or accompanying
                 if prompt.is_empty() {
-                    prompt = "Halo Porpan!".to_string();
+                    if !msg.sticker_items.is_empty() {
+                        let sticker_names: Vec<&str> = msg.sticker_items.iter().map(|s| s.name.as_str()).collect();
+                        prompt = format!("[Mengirim stiker: {}]", sticker_names.join(", "));
+                    } else if !msg.attachments.is_empty() {
+                        prompt = "[Mengirim gambar/media]".to_string();
+                    } else {
+                        prompt = "Halo Porpan!".to_string();
+                    }
+                } else if !msg.sticker_items.is_empty() {
+                    let sticker_names: Vec<&str> = msg.sticker_items.iter().map(|s| s.name.as_str()).collect();
+                    prompt = format!("{} [stiker: {}]", prompt, sticker_names.join(", "));
                 }
 
                 let _ = msg.channel_id.broadcast_typing(&ctx.http).await;

@@ -49,6 +49,64 @@ fn get_local_response(prompt: &str) -> Option<&'static str> {
     }
 }
 
+fn extract_gemini_reply(raw_text: &str) -> (String, Option<MemoryUpdates>) {
+    let trimmed = raw_text.trim();
+
+    // 1. Strip markdown code fences if present (```json ... ``` or ``` ... ```)
+    let cleaned = if let Some(stripped) = trimmed.strip_prefix("```json") {
+        stripped.strip_suffix("```").unwrap_or(stripped).trim()
+    } else if let Some(stripped) = trimmed.strip_prefix("```") {
+        stripped.strip_suffix("```").unwrap_or(stripped).trim()
+    } else {
+        trimmed
+    };
+
+    // 2. Try direct deserialization into GeminiResponse
+    if let Ok(resp) = serde_json::from_str::<GeminiResponse>(cleaned) {
+        if !resp.reply.trim().is_empty() {
+            return (resp.reply, resp.memory_updates);
+        }
+    }
+
+    // 3. Try parsing as generic serde_json::Value
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(cleaned) {
+        if let Some(reply_str) = val.get("reply").and_then(|r| r.as_str()) {
+            if !reply_str.trim().is_empty() {
+                let mut mem: Option<MemoryUpdates> = None;
+                if let Some(mem_val) = val.get("memory_updates") {
+                    if mem_val.is_object() {
+                        mem = serde_json::from_value::<MemoryUpdates>(mem_val.clone()).ok();
+                    }
+                }
+                return (reply_str.to_string(), mem);
+            }
+        }
+    }
+
+    // 4. Try finding a JSON object block inside the text
+    if let (Some(start), Some(end)) = (cleaned.find('{'), cleaned.rfind('}')) {
+        if start < end {
+            let json_slice = &cleaned[start..=end];
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_slice) {
+                if let Some(reply_str) = val.get("reply").and_then(|r| r.as_str()) {
+                    if !reply_str.trim().is_empty() {
+                        return (reply_str.to_string(), None);
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. If Gemini replied in plain text instead of JSON, use that plain text directly
+    let plain = cleaned.trim_matches(|c| c == '`' || c == '{' || c == '}').trim();
+    if !plain.is_empty() && !plain.starts_with("\"reply\"") {
+        return (plain.to_string(), None);
+    }
+
+    // 6. Natural in-character fallback (never show technical errors)
+    ("Wkwk iyaa, gimana tuh? 😄".to_string(), None)
+}
+
 pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prompt: &str) {
     let user_id = msg.author.id.get();
     let username = msg.author.name.clone();
@@ -185,57 +243,51 @@ pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prom
         Ok(res) => {
             if let Ok(json_res) = res.json::<serde_json::Value>().await {
                 if let Some(text) = json_res["candidates"][0]["content"]["parts"][0]["text"].as_str() {
-                    match serde_json::from_str::<GeminiResponse>(text) {
-                        Ok(gemini_data) => {
-                            let _ = msg.reply(&ctx.http, &gemini_data.reply).await;
+                    let (reply_text, memory_updates) = extract_gemini_reply(text);
 
-                            current_history.push(json!({
-                                "role": "model",
-                                "parts": [{"text": gemini_data.reply}]
-                            }));
+                    let _ = msg.reply(&ctx.http, &reply_text).await;
 
-                            if current_history.len() > 4 {
-                                let start = current_history.len() - 4;
-                                current_history = current_history[start..].to_vec();
-                            }
-                            
-                            let mut hist_lock = data.chat_history.write().await;
-                            hist_lock.insert(channel_id, current_history);
+                    current_history.push(json!({
+                        "role": "model",
+                        "parts": [{"text": reply_text}]
+                    }));
 
-                            let new_score = std::cmp::min(memory.relationship_score + 1, 100);
-                            let fav_game = gemini_data.memory_updates.as_ref().and_then(|m| m.favorite_game.clone()).or(memory.favorite_game);
-                            let fav_food = gemini_data.memory_updates.as_ref().and_then(|m| m.favorite_food.clone()).or(memory.favorite_food);
-                            let about_u = gemini_data.memory_updates.as_ref().and_then(|m| m.about_user.clone()).or(memory.about_user);
-
-                            let _ = sqlx::query("
-                                INSERT INTO khivella_memory (user_id, username, favorite_game, favorite_food, about_user, relationship_score, last_interaction)
-                                VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                                ON CONFLICT (user_id) DO UPDATE 
-                                SET username = $2, favorite_game = $3, favorite_food = $4, about_user = $5, relationship_score = $6, last_interaction = NOW()
-                            ")
-                            .bind(user_id.to_string())
-                            .bind(&username)
-                            .bind(fav_game)
-                            .bind(fav_food)
-                            .bind(about_u)
-                            .bind(new_score)
-                            .execute(&data.db_pool)
-                            .await;
-                        }
-                        Err(e) => {
-                            error!("Failed to parse JSON from Gemini: {}", e);
-                            let _ = msg.reply(&ctx.http, "Eh sorry gw error dikit, gatau mau jawab apa (JSON parse error).").await;
-                        }
+                    if current_history.len() > 4 {
+                        let start = current_history.len() - 4;
+                        current_history = current_history[start..].to_vec();
                     }
+                    
+                    let mut hist_lock = data.chat_history.write().await;
+                    hist_lock.insert(channel_id, current_history);
+
+                    let new_score = std::cmp::min(memory.relationship_score + 1, 100);
+                    let fav_game = memory_updates.as_ref().and_then(|m| m.favorite_game.clone()).or(memory.favorite_game);
+                    let fav_food = memory_updates.as_ref().and_then(|m| m.favorite_food.clone()).or(memory.favorite_food);
+                    let about_u = memory_updates.as_ref().and_then(|m| m.about_user.clone()).or(memory.about_user);
+
+                    let _ = sqlx::query("
+                        INSERT INTO khivella_memory (user_id, username, favorite_game, favorite_food, about_user, relationship_score, last_interaction)
+                        VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                        ON CONFLICT (user_id) DO UPDATE 
+                        SET username = $2, favorite_game = $3, favorite_food = $4, about_user = $5, relationship_score = $6, last_interaction = NOW()
+                    ")
+                    .bind(user_id.to_string())
+                    .bind(&username)
+                    .bind(fav_game)
+                    .bind(fav_food)
+                    .bind(about_u)
+                    .bind(new_score)
+                    .execute(&data.db_pool)
+                    .await;
                 } else {
                     error!("Gemini API Error Response: {}", serde_json::to_string_pretty(&json_res).unwrap_or_default());
-                    let _ = msg.reply(&ctx.http, "Eh sori error API limit atau model ditolak. Cek log Railway!").await;
+                    let _ = msg.reply(&ctx.http, "Lagi agak ngelag nih sinyal gw, bentar yaa.").await;
                 }
             }
         }
         Err(e) => {
             error!("Request failed: {}", e);
-            let _ = msg.reply(&ctx.http, "Koneksi ke AI lagi jelek nih, sorry ya.").await;
+            let _ = msg.reply(&ctx.http, "Sinyal gw lagi rada jelek nih, nanti ngobrol lagi yaa.").await;
         }
     }
 }
