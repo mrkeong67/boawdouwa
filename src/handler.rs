@@ -154,13 +154,43 @@ pub async fn event_handler(
             let contains_porpan = msg.content.to_lowercase().contains("porpan");
 
             if is_mention || is_reply || contains_porpan {
+                let full_lower = msg.content.trim().to_lowercase();
+                
+                // Ignore commands intended for other bots (e.g. Koya `koyapp @porpan`, Dank Memer, common bot prefixes)
+                let is_other_bot_cmd = full_lower.starts_with("koya")
+                    || full_lower.starts_with("pls ")
+                    || full_lower.starts_with("t!")
+                    || full_lower.starts_with("m!")
+                    || full_lower.starts_with("p!")
+                    || full_lower.starts_with("k!")
+                    || full_lower.starts_with("c!")
+                    || full_lower.starts_with(';')
+                    || full_lower.starts_with("!avatar")
+                    || full_lower.starts_with("!pp")
+                    || full_lower.starts_with("!pfp")
+                    || full_lower.starts_with("!banner")
+                    || full_lower.starts_with("!info")
+                    || full_lower.starts_with("!whois")
+                    || full_lower.starts_with("?avatar")
+                    || full_lower.starts_with("?pp")
+                    || full_lower.starts_with(".avatar")
+                    || full_lower.starts_with(".pp");
+
+                if is_other_bot_cmd {
+                    return Ok(());
+                }
+
                 let mut prompt = msg.content.clone();
                 let mention_tag1 = format!("<@{}>", bot_id);
                 let mention_tag2 = format!("<@!{}>", bot_id);
                 prompt = prompt.replace(&mention_tag1, "").replace(&mention_tag2, "").trim().to_string();
 
+                if prompt.to_lowercase().starts_with("koya") {
+                    return Ok(());
+                }
+
                 if prompt.is_empty() {
-                    prompt = "Halo 4FunBot!".to_string();
+                    prompt = "Halo Porpan!".to_string();
                 }
 
                 let _ = msg.channel_id.broadcast_typing(&ctx.http).await;
