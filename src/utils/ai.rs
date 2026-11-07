@@ -35,12 +35,12 @@ fn get_local_response(prompt: &str) -> Option<&'static str> {
     let lower_trim = lower.trim();
     
     match lower_trim {
-        "pagi" | "selamat pagi" | "met pagi" => Some("Pagi juga!"),
-        "malam" | "selamat malam" | "met malem" => Some("Malam!"),
-        "siang" => Some("Siang!"),
-        "halo" | "haloo" | "hi" | "hai" | "oi" | "weh" => Some("Halo!"),
+        "pagi" | "selamat pagi" | "met pagi" => Some("pagi juga!"),
+        "malam" | "selamat malam" | "met malem" => Some("malam!"),
+        "siang" => Some("siang!"),
+        "halo" | "haloo" | "hi" | "hai" | "oi" | "weh" => Some("halo!"),
         "wkwk" | "wkwkwk" | "awokwok" | "haha" => Some("wkwk"),
-        "test" | "tes" => Some("masuk jir"),
+        "test" | "tes" => Some("masuk"),
         "bjir" | "njir" | "anjir" | "jir" => Some("jir"),
         "gatau" | "g" => Some("yaudah"),
         "ok" | "oke" | "y" => Some("ok"),
@@ -104,7 +104,7 @@ fn extract_gemini_reply(raw_text: &str) -> (String, Option<MemoryUpdates>) {
     }
 
     // 6. Natural in-character fallback (never show technical errors)
-    ("Wkwk iyaa, gimana tuh? 😄".to_string(), None)
+    ("wkwk iyaa, gimana tuh? 😄".to_string(), None)
 }
 
 pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prompt: &str) {
@@ -182,8 +182,9 @@ pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prom
        - Kalau ada yang bertanya atau mengobrol, tanggapi dengan baik, ramah, dan membantu.
        - Kalau ada yang mengirim stiker atau bercanda santai, tanggapi dengan hangat dan ceria ("Halo!", "Wkwk stikernya lucu amat", "Bisa aja lu haha").
        - Jika ada yang memaki kotor atau toxic secara sengaja, tanggapi dengan tenang dan tegas tanpa perlu ikut-ikutan ngeselin atau emosi.
-    4. PANJANG JAWABAN:
-       - Natural layaknya chatting di Discord.
+    4. GAYA KETIKAN (WAJIB HURUF KECIL SEMUA) & PANJANG JAWABAN:
+       - WAJIB gunakan huruf kecil semua (lowercase). Jangan pernah gunakan huruf kapital sama sekali, bahkan di awal kalimat atau nama (contoh: "halo juga", "wkwk iyaa bener", "lagi apa nih").
+       - Natural layaknya chatting santai anak muda di Discord.
        - Rata-rata balasan SEDANG (sekitar 1-3 kalimat), tidak terlalu panjang dan tidak ketus.
     5. Info member 4FUN dan rules ada pada referensi website di atas. Jawab ramah jika ada yang bertanya.
     6. Wajib balas dalam format JSON berikut:
@@ -243,6 +244,7 @@ pub async fn handle_chat(ctx: &SerenityContext, msg: &Message, data: &Data, prom
             if let Ok(json_res) = res.json::<serde_json::Value>().await {
                 if let Some(text) = json_res["candidates"][0]["content"]["parts"][0]["text"].as_str() {
                     let (reply_text, memory_updates) = extract_gemini_reply(text);
+                    let reply_text = reply_text.to_lowercase();
 
                     let _ = msg.reply(&ctx.http, &reply_text).await;
 
